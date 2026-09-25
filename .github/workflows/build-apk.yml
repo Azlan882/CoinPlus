@@ -17,6 +17,10 @@ jobs:
     name: Build Android APK
     runs-on: ubuntu-latest
 
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -35,11 +39,71 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Android SDK Licenses Non-Interactively
+        run: |
+          echo "Configuring Android SDK at $ANDROID_HOME..."
+          
+          # Add SDK commandline tools and platform-tools to path
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
+            echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          fi
+          if [ -d "$ANDROID_HOME/platform-tools" ]; then
+            echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+            export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          fi
 
-      - name: Accept Android SDK Licenses
-        run: yes | sdkmanager --licenses || true
+          # 1. Pre-seed all standard SHA-1 license hashes into the licenses directory
+          mkdir -p "$ANDROID_HOME/licenses"
+
+          # android-sdk-license (all historical and modern revisions)
+          printf "8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6824ea7279bf83f126be9ee6178e8\n" > "$ANDROID_HOME/licenses/android-sdk-license"
+
+          # android-sdk-preview-license
+          printf "84831b9409646a918e30573bab4c9c91346d8abd\n" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+
+          # android-googletv-license
+          printf "601085b94cd77f0b54ff86406957099fed7926c4\nd97543802996754ba520286242e8cf6f168a8c60\n" > "$ANDROID_HOME/licenses/android-googletv-license"
+
+          # android-sdk-arm-dbt-license
+          printf "859f317696e351857647822304914cedf83f2f67\n" > "$ANDROID_HOME/licenses/android-sdk-arm-dbt-license"
+
+          # google-gdk-license
+          printf "33b6a2b64f07944f47e583e47ab61d03d952e6d5\n" > "$ANDROID_HOME/licenses/google-gdk-license"
+
+          # mips-android-sysimage-license
+          printf "e9acab5ba5f73c61beec0084170e0ea03f2d49c8\n" > "$ANDROID_HOME/licenses/mips-android-sysimage-license"
+
+          echo "Pre-seeded standard license hashes successfully."
+
+          # 2. Run non-interactive license acceptance with pipe
+          SDKMANAGER=""
+          if command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          elif [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          if [ -n "$SDKMANAGER" ]; then
+            echo "Confirming non-interactive license acceptance via $SDKMANAGER..."
+            yes | "$SDKMANAGER" --licenses || true
+          fi
+
+      - name: Install Android Platform & Build-Tools
+        run: |
+          SDKMANAGER=""
+          if command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          elif [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          if [ -n "$SDKMANAGER" ]; then
+            echo "Installing platforms;android-36 and build-tools;36.0.0 explicitly..."
+            yes | "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "platform-tools" || true
+          else
+            echo "sdkmanager command not found; relying on preinstalled SDK and Gradle auto-download."
+          fi
 
       - name: Install NPM Dependencies via package-lock.json
         run: npm ci
