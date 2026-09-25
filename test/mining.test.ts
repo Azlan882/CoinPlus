@@ -210,6 +210,39 @@ async function runTests() {
     assert(stats.activatedReferrals >= 1, 'Stats must reflect activated referral');
   });
 
+  // 11. Google-Only User Identity and Stable Subject ID
+  await test('Google Authentication: Stable Google Subject ID and Account Linking', () => {
+    const googleSub = '109876543210987654321';
+    const googleUser: User = {
+      id: `usr_google_${Date.now()}`,
+      googleId: googleSub,
+      username: 'satoshi_google',
+      email: 'satoshi@googlemail.internal',
+      referralCode: 'SATO1234',
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+
+    db.createUser(googleUser, 0.0);
+
+    const foundByGoogleId = db.getUserByGoogleId(googleSub);
+    assert(foundByGoogleId, 'User must be resolvable by Google Subject sub ID');
+    assert.strictEqual(foundByGoogleId?.email, 'satoshi@googlemail.internal');
+    assert.strictEqual(foundByGoogleId?.googleId, googleSub);
+
+    // Verify session token can be issued and verified for Google user
+    const token = generateToken(foundByGoogleId);
+    const tokenPayload = verifyToken(token);
+    assert.strictEqual(tokenPayload?.userId, googleUser.id, 'Session token must encode user ID for Google account');
+  });
+
   console.log(`\n========================================`);
   console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
   console.log(`========================================\n`);

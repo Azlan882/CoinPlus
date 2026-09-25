@@ -24,6 +24,83 @@ async function startServer() {
   // Mount API router
   app.use('/api', apiRouter);
 
+  // OAuth 2.0 / OpenID Connect callback page for popup flows
+  app.get(['/auth/callback', '/auth/callback/'], (_req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html>
+  <head>
+    <title>CoinPulse - Google Authentication</title>
+    <style>
+      body {
+        background-color: #070b14;
+        color: #f1f5f9;
+        font-family: system-ui, -apple-system, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        text-align: center;
+        padding: 20px;
+      }
+      .spinner {
+        width: 36px;
+        height: 36px;
+        border: 3px solid rgba(0, 242, 254, 0.2);
+        border-top-color: #00f2fe;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin-bottom: 16px;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="spinner"></div>
+    <h3>Verifying Google Authentication...</h3>
+    <p style="color: #94a3b8; font-size: 13px;">Please wait while we complete your sign-in.</p>
+    <script>
+      (function() {
+        // Extract id_token or access_token from URL fragment hash or query params
+        var hash = window.location.hash.substring(1);
+        var params = new URLSearchParams(hash || window.location.search);
+        var idToken = params.get('id_token') || params.get('access_token') || params.get('token');
+
+        if (idToken) {
+          if (window.opener) {
+            window.opener.postMessage({
+              type: 'GOOGLE_AUTH_SUCCESS',
+              token: idToken
+            }, '*');
+            setTimeout(function() { window.close(); }, 300);
+          } else {
+            // Direct window: save to sessionStorage and redirect
+            sessionStorage.setItem('pending_google_token', idToken);
+            window.location.href = '/';
+          }
+        } else {
+          var error = params.get('error') || 'Authentication was cancelled or failed.';
+          if (window.opener) {
+            window.opener.postMessage({
+              type: 'GOOGLE_AUTH_ERROR',
+              error: error
+            }, '*');
+            setTimeout(function() { window.close(); }, 1200);
+          } else {
+            alert(error);
+            window.location.href = '/';
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>`);
+  });
+
   if (!isProduction) {
     // Vite middleware in development
     const { createServer: createViteServer } = await import('vite');

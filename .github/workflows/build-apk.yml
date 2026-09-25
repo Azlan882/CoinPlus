@@ -124,6 +124,23 @@ jobs:
             chmod +x android/gradlew
           fi
 
+      - name: Inspect Debug Keystore & Print SHA-1 Fingerprint
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            echo "Standard debug.keystore not present; generating standard Android debug keystore..."
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          
+          echo "=================================================================="
+          echo "COINPULSE DEBUG APK KEYSTORE DETAILS:"
+          keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android
+          
+          SHA1_VALUE=$(keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep -i "SHA1:" | head -n 1 | awk '{print $2}')
+          echo "=================================================================="
+          echo "COINPULSE DEBUG APK SHA-1: $SHA1_VALUE"
+          echo "=================================================================="
+
       - name: Build Android Debug APK
         working-directory: ./android
         run: ./gradlew assembleDebug --stacktrace --no-daemon

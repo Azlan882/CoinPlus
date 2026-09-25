@@ -67,33 +67,27 @@ class ApiService {
   }
 
   // --- Auth ---
-  async register(params: { username: string; email: string; password: string; referralCode?: string }) {
-    const res = await this.request<{
+  async getGoogleConfig() {
+    return this.request<{
       success: boolean;
-      token: string;
-      user: User;
-      balance: any;
-      miningState: any;
-      message: string;
-    }>('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    });
-    this.setToken(res.token);
-    return res;
+      clientId: string;
+      appUrl: string;
+    }>('/api/auth/google/config');
   }
 
-  async login(identifier: string, password: string) {
+  async loginWithGoogle(googleToken: string, referralCode?: string) {
     const res = await this.request<{
       success: boolean;
       token: string;
       user: User;
       balance: any;
       miningState: any;
+      isNewUser: boolean;
       serverTime: number;
-    }>('/api/auth/login', {
+      message: string;
+    }>('/api/auth/google', {
       method: 'POST',
-      body: JSON.stringify({ identifier, password }),
+      body: JSON.stringify({ token: googleToken, referralCode }),
     });
     this.setToken(res.token);
     return res;

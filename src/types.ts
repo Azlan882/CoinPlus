@@ -2,8 +2,10 @@ export type TabType = 'mining' | 'team' | 'ledger' | 'roadmap' | 'admin';
 
 export interface User {
   id: string;
+  googleId?: string;
   username: string;
   email: string;
+  picture?: string;
   referralCode: string;
   referredByUserId: string | null;
   role: 'user' | 'admin';

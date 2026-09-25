@@ -1,7 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { Key, UserPlus, LogIn, X, Shield, Sparkles, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Shield, Sparkles, AlertCircle, CheckCircle2, HelpCircle } from 'lucide-react';
 import { api } from '../api.ts';
 import { User, BalanceState, MiningStatusResponse } from '../types.ts';
+
+declare global {
+  interface Window {
+    google?: any;
+    handleGoogleCredentialResponse?: (response: any) => void;
+  }
+}
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -10,84 +17,188 @@ interface AuthModalProps {
   initialRefCode?: string;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess, initialRefCode }) => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+export const AuthModal: React.FC<AuthModalProps> = ({
+  isOpen,
+  onClose,
+  onSuccess,
+  initialRefCode,
+}) => {
   const [referralCode, setReferralCode] = useState(initialRefCode || '');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [googleClientId, setGoogleClientId] = useState<string>('');
+  const [showConfigHelp, setShowConfigHelp] = useState(false);
+  const [manualToken, setManualToken] = useState('');
+  const [showManualInput, setShowManualInput] = useState(false);
 
+  const googleButtonContainerRef = useRef<HTMLDivElement>(null);
+
+  // Sync initial referral code from URL or invites
   useEffect(() => {
     if (initialRefCode) {
       setReferralCode(initialRefCode);
-      setMode('register');
     }
   }, [initialRefCode]);
 
+  // Fetch Google Client ID from backend
+  useEffect(() => {
+    if (!isOpen) return;
+    let isMounted = true;
+
+    api
+      .getGoogleConfig()
+      .then((cfg) => {
+        if (!isMounted) return;
+        if (cfg.clientId) {
+          setGoogleClientId(cfg.clientId);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load Google client config:', err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
+  // Initialize Google Identity Services button once Client ID or container is ready
+  useEffect(() => {
+    if (!isOpen || !googleClientId) return;
+
+    const renderGoogleBtn = () => {
+      if (window.google?.accounts?.id && googleButtonContainerRef.current) {
+        try {
+          window.google.accounts.id.initialize({
+            client_id: googleClientId,
+            callback: (res: any) => {
+              if (res.credential) {
+                handleGoogleTokenSubmit(res.credential);
+              }
+            },
+            auto_select: false,
+            cancel_on_tap_outside: true,
+          });
+
+          googleButtonContainerRef.current.innerHTML = '';
+          window.google.accounts.id.renderButton(googleButtonContainerRef.current, {
+            type: 'standard',
+            theme: 'filled_black',
+            size: 'large',
+            text: 'continue_with',
+            shape: 'pill',
+            logo_alignment: 'left',
+            width: 280,
+          });
+        } catch (e) {
+          console.error('Google button render error:', e);
+        }
+      }
+    };
+
+    renderGoogleBtn();
+    const interval = setInterval(() => {
+      if (window.google?.accounts?.id && googleButtonContainerRef.current?.children.length === 0) {
+        renderGoogleBtn();
+      }
+    }, 400);
+
+    return () => clearInterval(interval);
+  }, [isOpen, googleClientId]);
+
   if (!isOpen) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGoogleTokenSubmit = async (tokenString: string) => {
+    if (!tokenString || !tokenString.trim()) {
+      setError('Please provide a valid Google credential or token.');
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
+    setInfoMessage(null);
 
     try {
-      if (mode === 'register') {
-        const res = await api.register({
-          username,
-          email,
-          password,
-          referralCode: referralCode.trim() || undefined,
-        });
-        onSuccess(res.user, res.balance, res.miningState);
-        onClose();
-      } else {
-        const res = await api.login(username || email, password);
-        onSuccess(res.user, res.balance, res.miningState);
-        onClose();
+      const res = await api.loginWithGoogle(tokenString.trim(), referralCode.trim() || undefined);
+      onSuccess(res.user, res.balance, res.miningState);
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Google authentication failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * OAuth 2.0 Popup Flow (Standard Web & Capacitor compatible OAuth redirect/popup)
+   */
+  const handleDirectOAuthFlow = () => {
+    setError(null);
+    setInfoMessage(null);
+
+    const clientId =
+      googleClientId ||
+      (window as any).__GOOGLE_CLIENT_ID__ ||
+      '';
+
+    if (!clientId) {
+      setError(
+        'Google Client ID is not yet configured. Please set GOOGLE_CLIENT_ID in your environment variables, or enter a token below.'
+      );
+      setShowConfigHelp(true);
+      return;
+    }
+
+    const redirectUri = `${window.location.origin}/auth/callback`;
+    const scope = encodeURIComponent('openid email profile');
+    const nonce = Math.random().toString(36).substring(2);
+    const state = JSON.stringify({
+      ref: referralCode.trim() || '',
+      origin: window.location.origin,
+    });
+
+    // Google OpenID Connect OAuth authorization URL
+    const googleAuthUrl =
+      `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${encodeURIComponent(clientId)}&` +
+      `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+      `response_type=id_token%20token&` +
+      `scope=${scope}&` +
+      `nonce=${nonce}&` +
+      `state=${encodeURIComponent(state)}&` +
+      `prompt=select_account`;
+
+    const popup = window.open(
+      googleAuthUrl,
+      'google_auth_popup',
+      'width=500,height=650,left=150,top=100'
+    );
+
+    if (!popup || popup.closed) {
+      setInfoMessage('Popup was blocked by your browser. Please allow popups for CoinPulse.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    // Listen for OAuth message or poll popup location hash
+    const messageHandler = (event: MessageEvent) => {
+      if (event.data?.type === 'GOOGLE_AUTH_SUCCESS' && event.data?.token) {
+        window.removeEventListener('message', messageHandler);
+        clearInterval(pollInterval);
+        handleGoogleTokenSubmit(event.data.token);
       }
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    };
+    window.addEventListener('message', messageHandler);
 
-  const handleQuickDemoAdmin = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const res = await api.login('admin', 'AdminCoinPulse2026!');
-      onSuccess(res.user, res.balance, res.miningState);
-      onClose();
-    } catch (err: any) {
-      setError(err.message || 'Admin login failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleQuickDemoMiner = async () => {
-    setIsLoading(true);
-    setError(null);
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-    const demoUser = `miner_${randomSuffix}`;
-    try {
-      const res = await api.register({
-        username: demoUser,
-        email: `miner${randomSuffix}@coinpulse.net`,
-        password: 'Password123!',
-        referralCode: referralCode.trim() || 'ADMINPULSE',
-      });
-      onSuccess(res.user, res.balance, res.miningState);
-      onClose();
-    } catch (err: any) {
-      setError(err.message || 'Demo miner creation failed');
-    } finally {
-      setIsLoading(false);
-    }
+    const pollInterval = window.setInterval(() => {
+      if (popup.closed) {
+        clearInterval(pollInterval);
+        window.removeEventListener('message', messageHandler);
+        setIsLoading(false);
+      }
+    }, 1000);
   };
 
   return (
@@ -96,166 +207,182 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-xl bg-cyan-950 border border-cyan-800/80 text-cyan-400">
-              <Key className="w-5 h-5" />
+            <div className="p-2.5 rounded-xl bg-cyan-950 border border-cyan-800/80 text-cyan-400">
+              <svg className="w-5 h-5" viewBox="0 0 24 24">
+                <path
+                  fill="#4285F4"
+                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                />
+                <path
+                  fill="#34A853"
+                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                />
+                <path
+                  fill="#FBBC05"
+                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                />
+                <path
+                  fill="#EA4335"
+                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                />
+              </svg>
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">
-                {mode === 'login' ? 'Welcome Back' : 'Create Miner Account'}
-              </h2>
-              <p className="text-[11px] text-slate-400">
-                {mode === 'login' ? 'Access your mining station & balance' : 'Start your hourly mining journey'}
-              </p>
+              <h2 className="text-base font-bold text-white">Sign In to CoinPulse</h2>
+              <p className="text-[11px] text-slate-400">Authentication powered exclusively by Google</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Tab Toggle */}
-        <div className="flex items-center p-1 rounded-xl bg-slate-950 border border-slate-800 text-xs font-medium">
-          <button
-            type="button"
-            onClick={() => {
-              setMode('login');
-              setError(null);
-            }}
-            className={`flex-1 py-1.5 rounded-lg transition-all ${
-              mode === 'login' ? 'bg-cyan-600 text-slate-950 font-bold' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode('register');
-              setError(null);
-            }}
-            className={`flex-1 py-1.5 rounded-lg transition-all ${
-              mode === 'register' ? 'bg-cyan-600 text-slate-950 font-bold' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Register
-          </button>
+        {/* Security Assurance Badge */}
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300">
+          <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>OAuth 2.0 / OpenID Connect verified on server with persistent Google Subject ID.</span>
         </div>
 
         {error && (
-          <div className="p-3 rounded-xl bg-red-950/60 border border-red-800/80 text-xs text-red-200">
-            {error}
+          <div className="p-3 rounded-xl bg-red-950/60 border border-red-800/80 text-xs text-red-200 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <div className="flex-1">{error}</div>
           </div>
         )}
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="text-[11px] uppercase font-mono text-slate-400 block mb-1">
-              Username {mode === 'login' && 'or Email'}
-            </label>
-            <input
-              type="text"
-              required
-              placeholder={mode === 'login' ? 'Username or email' : 'e.g. Satoshi_21'}
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
-            />
+        {infoMessage && (
+          <div className="p-3 rounded-xl bg-cyan-950/60 border border-cyan-800/80 text-xs text-cyan-200 flex items-start gap-2">
+            <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+            <div className="flex-1">{infoMessage}</div>
           </div>
+        )}
 
-          {mode === 'register' && (
-            <div>
-              <label className="text-[11px] uppercase font-mono text-slate-400 block mb-1">
-                Email Address
-              </label>
-              <input
-                type="email"
-                required
-                placeholder="name@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
-              />
-            </div>
-          )}
-
-          <div>
-            <label className="text-[11px] uppercase font-mono text-slate-400 block mb-1">
-              Password
+        {/* Optional Referral Code for New Google Accounts */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <label className="text-[11px] uppercase font-mono text-slate-400">
+              Referral Code (Optional)
             </label>
-            <input
-              type="password"
-              required
-              minLength={6}
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
-            />
+            <span className="text-[10px] text-emerald-400 font-medium">+0.01 CP/h bonus</span>
           </div>
+          <input
+            type="text"
+            placeholder="e.g. ADMINPULSE"
+            value={referralCode}
+            onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+            className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono uppercase text-cyan-300 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+          />
+          <p className="text-[10px] text-slate-500">
+            If invited by a friend, enter their code before continuing.
+          </p>
+        </div>
 
-          {mode === 'register' && (
-            <div>
-              <label className="text-[11px] uppercase font-mono text-slate-400 block mb-1">
-                Referral Code (Optional)
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. ADMINPULSE"
-                value={referralCode}
-                onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
-                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono uppercase text-cyan-300 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
-              />
-            </div>
-          )}
+        {/* Primary Google Authentication Button */}
+        <div className="space-y-3 pt-2">
+          {/* Official Google One-Tap / Identity Services Button Container */}
+          <div className="flex justify-center" ref={googleButtonContainerRef} />
 
+          {/* Fallback & Direct OAuth Continue Button */}
           <button
-            type="submit"
+            type="button"
+            onClick={handleDirectOAuthFlow}
             disabled={isLoading}
-            className="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-sky-600 hover:from-cyan-400 hover:to-sky-500 text-slate-950 font-bold text-xs sm:text-sm shadow-lg shadow-cyan-500/20 active:scale-95 transition-all flex items-center justify-center gap-2 mt-2"
+            className="w-full py-3 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs sm:text-sm shadow-lg shadow-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-3"
           >
             {isLoading ? (
-              <div className="w-4 h-4 rounded-full border-2 border-slate-950 border-t-transparent animate-spin" />
-            ) : mode === 'login' ? (
-              <>
-                <LogIn className="w-4 h-4" />
-                <span>Sign In to Mining Station</span>
-              </>
+              <div className="w-4 h-4 rounded-full border-2 border-slate-900 border-t-transparent animate-spin" />
             ) : (
               <>
-                <UserPlus className="w-4 h-4" />
-                <span>Create Permanent Account</span>
+                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                  />
+                </svg>
+                <span>Continue with Google</span>
               </>
             )}
           </button>
-        </form>
+        </div>
 
-        {/* Quick Testing Shortcuts */}
-        <div className="pt-2 border-t border-slate-800/80">
-          <div className="text-[10px] uppercase font-mono text-slate-500 text-center mb-2">
-            Instant Test Profiles
+        {/* Informational Notes */}
+        <div className="pt-2 border-t border-slate-800/80 space-y-2">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
+            <span>First time? Your miner account is created automatically.</span>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-xs">
+
+          <div className="flex items-center justify-between text-[11px]">
             <button
-              onClick={handleQuickDemoMiner}
-              disabled={isLoading}
-              className="py-1.5 px-2 rounded-xl bg-slate-900 border border-slate-800 hover:bg-slate-850 text-slate-300 text-[11px] flex items-center justify-center gap-1"
+              type="button"
+              onClick={() => setShowConfigHelp(!showConfigHelp)}
+              className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 text-[11px]"
             >
-              <Sparkles className="w-3 h-3 text-cyan-400" />
-              <span>+ New Miner</span>
+              <HelpCircle className="w-3.5 h-3.5" />
+              <span>Google OAuth Setup Info</span>
             </button>
+
             <button
-              onClick={handleQuickDemoAdmin}
-              disabled={isLoading}
-              className="py-1.5 px-2 rounded-xl bg-slate-900 border border-red-900/60 hover:bg-slate-850 text-red-300 text-[11px] flex items-center justify-center gap-1"
+              type="button"
+              onClick={() => setShowManualInput(!showManualInput)}
+              className="text-slate-400 hover:text-slate-200 text-[10px] underline"
             >
-              <Shield className="w-3 h-3 text-red-400" />
-              <span>Admin Root</span>
+              Manual token input
             </button>
           </div>
+
+          {showManualInput && (
+            <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs">
+              <label className="text-[10px] uppercase font-mono text-slate-400 block">
+                Google ID Token or Access Token
+              </label>
+              <textarea
+                rows={2}
+                placeholder="Paste Google JWT id_token (e.g. eyJhbGci...)"
+                value={manualToken}
+                onChange={(e) => setManualToken(e.target.value)}
+                className="w-full px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+              />
+              <button
+                type="button"
+                onClick={() => handleGoogleTokenSubmit(manualToken)}
+                disabled={isLoading || !manualToken.trim()}
+                className="w-full py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-slate-950 font-bold text-xs"
+              >
+                Verify &amp; Sign In with Token
+              </button>
+            </div>
+          )}
+
+          {showConfigHelp && (
+            <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-[11px] text-slate-300 space-y-1.5">
+              <div className="font-semibold text-white flex items-center gap-1">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Google Cloud OAuth 2.0 Credentials:</span>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                1. Android Package: <code className="text-cyan-300 font-mono">com.coinpulse.mining</code>
+                <br />
+                2. SHA-1 Fingerprint: Register your debug keystore SHA-1.
+                <br />
+                3. Web Client ID: Set <code className="text-cyan-300 font-mono">GOOGLE_CLIENT_ID</code> in .env.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

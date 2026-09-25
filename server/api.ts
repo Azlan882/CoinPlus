@@ -2,14 +2,13 @@ import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import { db } from './db.ts';
 import {
-  hashPassword,
-  verifyPassword,
   generateToken,
   sanitizeUser,
   requireAuth,
   requireAdmin,
   AuthenticatedRequest,
 } from './auth.ts';
+import { verifyGoogleIdToken } from './googleAuth.ts';
 import { processMineRequest } from './miningService.ts';
 import { User, ReferralRecord } from './types.ts';
 
@@ -24,180 +23,214 @@ function checkAuthRateLimit(ip: string): boolean {
     authRateLimiter.set(ip, { count: 1, resetAt: now + 60_000 });
     return true;
   }
-  if (entry.count >= 15) {
-    return false; // Max 15 auth attempts per minute per IP
+  if (entry.count >= 30) {
+    return false; // Max 30 auth attempts per minute per IP
   }
   entry.count++;
   return true;
 }
 
 // -------------------------------------------------------------
-// 1. AUTHENTICATION ENDPOINTS
+// 1. AUTHENTICATION ENDPOINTS (GOOGLE ONLY)
 // -------------------------------------------------------------
 
-router.post('/auth/register', (req: Request, res: Response): void => {
-  const clientIp = req.ip || req.socket.remoteAddress || '127.0.0.1';
-  if (!checkAuthRateLimit(clientIp)) {
-    res.status(429).json({ success: false, error: 'Too many registration requests. Please wait a minute.' });
-    return;
-  }
-
-  const { username, email, password, referralCode } = req.body || {};
-
-  if (!username || typeof username !== 'string' || username.trim().length < 3) {
-    res.status(400).json({ success: false, error: 'Username must be at least 3 characters long.' });
-    return;
-  }
-
-  const cleanUsername = username.trim().toLowerCase();
-  if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUsername)) {
-    res.status(400).json({ success: false, error: 'Username must be 3-20 alphanumeric characters or underscores.' });
-    return;
-  }
-
-  if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-    res.status(400).json({ success: false, error: 'A valid email address is required.' });
-    return;
-  }
-  const cleanEmail = email.trim().toLowerCase();
-
-  if (!password || typeof password !== 'string' || password.length < 6) {
-    res.status(400).json({ success: false, error: 'Password must be at least 6 characters long.' });
-    return;
-  }
-
-  // Check unique constraints
-  if (db.getUserByUsername(cleanUsername)) {
-    res.status(409).json({ success: false, error: 'Username is already taken. Please choose another.' });
-    return;
-  }
-
-  if (db.getUserByEmail(cleanEmail)) {
-    res.status(409).json({ success: false, error: 'An account with this email already exists.' });
-    return;
-  }
-
-  // Handle referral code validation
-  let inviterUserId: string | null = null;
-  if (referralCode && typeof referralCode === 'string' && referralCode.trim()) {
-    const codeClean = referralCode.trim().toUpperCase();
-    const inviter = db.getUserByReferralCode(codeClean);
-    if (!inviter) {
-      res.status(400).json({ success: false, error: 'Invalid referral code provided.' });
-      return;
-    }
-    inviterUserId = inviter.id;
-  }
-
-  // Generate unique User ID and unique referral code
-  const userId = `usr_${crypto.randomBytes(8).toString('hex')}`;
-  const generatedReferralCode = cleanUsername.toUpperCase().slice(0, 4) + crypto.randomBytes(2).toString('hex').toUpperCase();
-
-  const { hash, salt } = hashPassword(password);
-
-  const newUser: User = {
-    id: userId,
-    username: cleanUsername,
-    email: cleanEmail,
-    passwordHash: hash,
-    salt,
-    referralCode: generatedReferralCode,
-    referredByUserId: inviterUserId,
-    role: 'user',
-    status: 'active',
-    baseMiningRate: 0.12,
-    bonusMiningRate: 0.0,
-    totalMiningRate: 0.12,
-    createdAt: new Date().toISOString(),
-    lastLoginAt: new Date().toISOString(),
-    lastActiveAt: new Date().toISOString(),
-    registrationIp: clientIp,
-  };
-
-  const { user, balance, miningState } = db.createUser(newUser, 0.0);
-
-  // If referred, create pending referral record
-  if (inviterUserId) {
-    // Check self-referral prevention (cannot refer self)
-    if (inviterUserId !== userId) {
-      const referralRecord: ReferralRecord = {
-        id: `ref_${Date.now()}_${userId.slice(-6)}`,
-        inviterUserId,
-        referredUserId: userId,
-        referralCodeUsed: referralCode.trim().toUpperCase(),
-        status: 'pending',
-        firstMiningCompletedAt: null,
-        rateBonusApplied: 0.01,
-        createdAt: new Date().toISOString(),
-      };
-      db.createReferral(referralRecord);
-    }
-  }
-
-  const token = generateToken(user);
-
-  res.status(201).json({
+/**
+ * Public Google Client ID discovery for client apps (web + Android Capacitor)
+ * Ensures no secrets are transmitted.
+ */
+router.get('/auth/google/config', (_req: Request, res: Response): void => {
+  res.json({
     success: true,
-    token,
-    user: sanitizeUser(user),
-    balance,
-    miningState,
-    message: 'Account created successfully! Welcome to CoinPulse.',
+    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    appUrl: process.env.APP_URL || '',
   });
 });
 
-router.post('/auth/login', (req: Request, res: Response): void => {
+/**
+ * Disabled legacy email/password routes to strictly enforce Google-only policy
+ */
+router.post('/auth/register', (_req: Request, res: Response): void => {
+  res.status(403).json({
+    success: false,
+    error: 'Email and password registration has been disabled. Please authenticate using your Google account.',
+  });
+});
+
+router.post('/auth/login', (_req: Request, res: Response): void => {
+  res.status(403).json({
+    success: false,
+    error: 'Email and password login has been disabled. Please authenticate using your Google account.',
+  });
+});
+
+/**
+ * Google Sign-In & Account Creation Endpoint
+ * Verifies the Google Identity Token (OIDC) or OAuth access token with Google.
+ * Uses Google 'sub' (subject) as the permanent, immutable unique identifier.
+ * Automatically links or provisions new CoinPulse miner accounts while preserving referrals.
+ */
+router.post('/auth/google', async (req: Request, res: Response): Promise<void> => {
   const clientIp = req.ip || req.socket.remoteAddress || '127.0.0.1';
   if (!checkAuthRateLimit(clientIp)) {
-    res.status(429).json({ success: false, error: 'Too many login attempts. Please wait.' });
+    res.status(429).json({ success: false, error: 'Too many authentication attempts. Please wait a minute.' });
     return;
   }
 
-  const { identifier, password } = req.body || {};
-  if (!identifier || !password) {
-    res.status(400).json({ success: false, error: 'Identifier (email or username) and password are required.' });
+  const { token: googleToken, referralCode } = req.body || {};
+
+  if (!googleToken || typeof googleToken !== 'string') {
+    res.status(400).json({
+      success: false,
+      error: 'Google authentication credential is required.',
+    });
     return;
   }
 
-  const cleanIdentifier = String(identifier).trim().toLowerCase();
-  const user = db.getUserByEmail(cleanIdentifier) || db.getUserByUsername(cleanIdentifier);
+  try {
+    // Cryptographically verify Google identity token
+    const googleProfile = await verifyGoogleIdToken(googleToken.trim());
+    const googleSub = googleProfile.sub;
+    const googleEmail = googleProfile.email.toLowerCase().trim();
 
-  if (!user) {
-    db.logSecurityEvent('invalid_credentials', clientIp, 'low', undefined, { identifier: cleanIdentifier }, req.headers['user-agent']);
-    res.status(401).json({ success: false, error: 'Invalid login credentials.' });
-    return;
+    // 1. Check if user already exists by persistent Google Subject ID (Preferred stable ID)
+    let user = db.getUserByGoogleId(googleSub);
+
+    // 2. If not found by googleId, check by email to gracefully link existing miners
+    if (!user) {
+      user = db.getUserByEmail(googleEmail);
+      if (user) {
+        // Link Google ID to existing account
+        db.updateUser(user.id, {
+          googleId: googleSub,
+          picture: googleProfile.picture || user.picture,
+          lastLoginAt: new Date().toISOString(),
+          lastActiveAt: new Date().toISOString(),
+        });
+        user = db.getUserById(user.id)!;
+      }
+    }
+
+    let isNewUser = false;
+
+    // 3. If still not found, automatically provision a brand new CoinPulse account
+    if (!user) {
+      isNewUser = true;
+
+      // Handle referral code validation if provided
+      let inviterUserId: string | null = null;
+      if (referralCode && typeof referralCode === 'string' && referralCode.trim()) {
+        const codeClean = referralCode.trim().toUpperCase();
+        const inviter = db.getUserByReferralCode(codeClean);
+        if (inviter) {
+          inviterUserId = inviter.id;
+        }
+      }
+
+      // Generate base username from Google profile or email
+      let baseUsername = '';
+      if (googleProfile.name) {
+        baseUsername = googleProfile.name.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 14);
+      }
+      if (!baseUsername || baseUsername.length < 3) {
+        baseUsername = googleEmail.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 14);
+      }
+      if (baseUsername.length < 3) {
+        baseUsername = `miner_${crypto.randomBytes(3).toString('hex')}`;
+      }
+
+      // Ensure uniqueness
+      let candidateUsername = baseUsername;
+      let counter = 1;
+      while (db.getUserByUsername(candidateUsername)) {
+        candidateUsername = `${baseUsername.slice(0, 10)}_${Math.floor(100 + Math.random() * 900)}`;
+        counter++;
+        if (counter > 10) {
+          candidateUsername = `miner_${crypto.randomBytes(4).toString('hex')}`;
+          break;
+        }
+      }
+
+      const userId = `usr_${crypto.randomBytes(8).toString('hex')}`;
+      const generatedReferralCode =
+        candidateUsername.toUpperCase().slice(0, 4) + crypto.randomBytes(2).toString('hex').toUpperCase();
+
+      const newUser: User = {
+        id: userId,
+        googleId: googleSub,
+        username: candidateUsername,
+        email: googleEmail,
+        picture: googleProfile.picture,
+        referralCode: generatedReferralCode,
+        referredByUserId: inviterUserId,
+        role: 'user',
+        status: 'active',
+        baseMiningRate: 0.12,
+        bonusMiningRate: 0.0,
+        totalMiningRate: 0.12,
+        createdAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+        lastActiveAt: new Date().toISOString(),
+        registrationIp: clientIp,
+      };
+
+      const creationResult = db.createUser(newUser, 0.0);
+      user = creationResult.user;
+
+      // If referred by another miner, register pending referral record
+      if (inviterUserId && inviterUserId !== userId) {
+        const referralRecord: ReferralRecord = {
+          id: `ref_${Date.now()}_${userId.slice(-6)}`,
+          inviterUserId,
+          referredUserId: userId,
+          referralCodeUsed: referralCode.trim().toUpperCase(),
+          status: 'pending',
+          firstMiningCompletedAt: null,
+          rateBonusApplied: 0.01,
+          createdAt: new Date().toISOString(),
+        };
+        db.createReferral(referralRecord);
+      }
+    } else {
+      // Existing user login
+      if (user.status === 'suspended') {
+        db.logSecurityEvent('account_suspended_action', clientIp, 'medium', user.id, { action: 'google_login' }, req.headers['user-agent']);
+        res.status(403).json({ success: false, error: 'Your account has been suspended by administration.' });
+        return;
+      }
+
+      db.updateUser(user.id, {
+        googleId: googleSub,
+        picture: googleProfile.picture || user.picture,
+        lastLoginAt: new Date().toISOString(),
+        lastActiveAt: new Date().toISOString(),
+      });
+      user = db.getUserById(user.id)!;
+    }
+
+    const token = generateToken(user);
+    const balance = db.getBalance(user.id);
+    const miningState = db.getMiningState(user.id);
+
+    res.json({
+      success: true,
+      token,
+      user: sanitizeUser(user),
+      balance,
+      miningState,
+      isNewUser,
+      serverTime: Date.now(),
+      message: isNewUser
+        ? 'Account successfully created with Google! Welcome to CoinPulse.'
+        : 'Welcome back! Signed in with Google.',
+    });
+  } catch (err: any) {
+    console.error('[GoogleAuth] Verification failed:', err.message);
+    db.logSecurityEvent('invalid_credentials', clientIp, 'low', undefined, { error: err.message }, req.headers['user-agent']);
+    res.status(401).json({
+      success: false,
+      error: `Google verification failed: ${err.message || 'Invalid Google credential'}`,
+    });
   }
-
-  if (user.status === 'suspended') {
-    db.logSecurityEvent('account_suspended_action', clientIp, 'medium', user.id, { action: 'login' }, req.headers['user-agent']);
-    res.status(403).json({ success: false, error: 'Your account has been suspended by administration.' });
-    return;
-  }
-
-  const isPasswordValid = verifyPassword(password, user.passwordHash, user.salt);
-  if (!isPasswordValid) {
-    db.logSecurityEvent('invalid_credentials', clientIp, 'medium', user.id, { identifier: cleanIdentifier }, req.headers['user-agent']);
-    res.status(401).json({ success: false, error: 'Invalid login credentials.' });
-    return;
-  }
-
-  db.updateUser(user.id, {
-    lastLoginAt: new Date().toISOString(),
-    lastActiveAt: new Date().toISOString(),
-  });
-
-  const token = generateToken(user);
-  const balance = db.getBalance(user.id);
-  const miningState = db.getMiningState(user.id);
-
-  res.json({
-    success: true,
-    token,
-    user: sanitizeUser(user),
-    balance,
-    miningState,
-    serverTime: Date.now(),
-  });
 });
 
 router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response): void => {

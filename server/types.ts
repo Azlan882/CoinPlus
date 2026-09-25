@@ -3,10 +3,12 @@ export type UserStatus = 'active' | 'suspended';
 
 export interface User {
   id: string; // Permanent unique account ID, e.g. usr_c7f8...
+  googleId?: string; // Stable unique Google sub identifier (OpenID Connect sub)
   username: string;
   email: string;
-  passwordHash: string;
-  salt: string;
+  picture?: string;
+  passwordHash?: string;
+  salt?: string;
   referralCode: string;
   referredByUserId: string | null;
   role: UserRole;

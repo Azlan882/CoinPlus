@@ -165,6 +165,11 @@ class Database {
     return this.data.users[id] || null;
   }
 
+  getUserByGoogleId(googleId: string): User | null {
+    const cleanId = String(googleId).trim();
+    return Object.values(this.data.users).find((u) => u.googleId === cleanId) || null;
+  }
+
   getUserByEmail(email: string): User | null {
     const normalized = email.toLowerCase().trim();
     return Object.values(this.data.users).find((u) => u.email.toLowerCase() === normalized) || null;

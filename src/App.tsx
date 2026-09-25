@@ -112,11 +112,33 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Initial auth restore
-    if (api.getToken()) {
+    // Initial auth restore or pending OAuth redirect token
+    const pendingGoogleToken = sessionStorage.getItem('pending_google_token');
+    if (pendingGoogleToken) {
+      sessionStorage.removeItem('pending_google_token');
+      api
+        .loginWithGoogle(pendingGoogleToken, refParam?.toUpperCase() || undefined)
+        .then((res) => {
+          setCurrentUser(res.user);
+          setBalance({
+            balance: res.balance.totalBalance,
+            totalMined: res.balance.totalMined,
+            totalReferralBonus: res.balance.totalReferralBonus,
+            lastCalculatedAt: res.balance.lastCalculatedAt,
+            integrityVerified: true,
+          });
+          setMiningStatus(res.miningState);
+          setIsAuthOpen(false);
+          showNotification(res.message, 'success');
+        })
+        .catch((err) => {
+          showNotification(err.message || 'Google sign-in failed', 'error');
+          setIsAuthOpen(true);
+        });
+    } else if (api.getToken()) {
       syncServerData();
     } else {
-      // Auto open auth on first visit so user can sign in or demo
+      // Auto open Google auth on first visit so user can sign in
       setIsAuthOpen(true);
     }
 
