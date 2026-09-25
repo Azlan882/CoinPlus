@@ -24,8 +24,8 @@ git push -u origin main
 2. Click on the **Actions** tab at the top.
 3. You will see a running workflow named **"Build Android APK"**.
 4. GitHub automatically:
-   - Sets up Ubuntu, Node.js 20, Java 17, and the Android SDK.
-   - Installs dependencies and builds the optimized web assets.
+   - Sets up Ubuntu, Node.js 20, Java 21 (matching Capacitor 8 requirements), and the Android SDK.
+   - Installs dependencies cleanly via `npm ci` and builds optimized web assets.
    - Compiles the native Android Gradle project.
    - Produces the native **`CoinPulse-v1.0-debug.apk`**.
 
