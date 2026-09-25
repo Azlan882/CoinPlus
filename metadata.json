@@ -1,0 +1,6 @@
+{
+  "name": "CoinPulse",
+  "description": "Production-ready hourly mining and referral network with server-side authoritative cooldowns, audit ledger, and security engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

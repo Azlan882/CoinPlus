@@ -1,0 +1,89 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NPM Dependencies
+        run: npm ci || npm install
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Setup Capacitor Android Platform
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Make Gradle Wrapper Executable
+        run: |
+          if [ -f "android/gradlew" ]; then
+            chmod +x android/gradlew
+          fi
+
+      - name: Build Android Debug APK
+        working-directory: ./android
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Locate Generated APK
+        run: |
+          echo "Listing generated APK files:"
+          find android/app/build/outputs/apk -name "*.apk"
+          mkdir -p build-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk build-output/CoinPulse-v1.0-debug.apk
+
+      - name: Upload APK to GitHub Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoinPulse-Android-APK
+          path: build-output/CoinPulse-v1.0-debug.apk
+          retention-days: 30
+
+      - name: Create GitHub Release with APK (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build-output/CoinPulse-v1.0-debug.apk
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## CoinPulse Android APK Release (${{ github.ref_name }})
+            
+            - Download `CoinPulse-v1.0-debug.apk` directly to install on your Android device.
+            - Server-authoritative hourly mining with anti-cheat protection.
+            - Referrals with milestone activation.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
