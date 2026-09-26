@@ -8,14 +8,106 @@ const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export interface TokenPayload {
   userId: string;
+  googleId?: string;
+  email?: string;
   username: string;
+  picture?: string;
+  referralCode?: string;
   role: 'user' | 'admin';
+  baseMiningRate?: number;
+  bonusMiningRate?: number;
+  totalMiningRate?: number;
   iat: number;
   exp: number;
 }
 
+export interface StateCheckpointPayload {
+  userId: string;
+  googleId?: string;
+  email: string;
+  username: string;
+  picture?: string;
+  referralCode: string;
+  role: 'user' | 'admin';
+  baseMiningRate: number;
+  bonusMiningRate: number;
+  totalMiningRate: number;
+  totalBalance: number;
+  totalMined: number;
+  totalReferralBonus: number;
+  lastMinedAt: number | null;
+  currentCycleStartTime: number | null;
+  nextMiningAvailableAt: number;
+  totalCyclesCompleted: number;
+  iat: number;
+}
+
 export interface AuthenticatedRequest extends Request {
   user?: User;
+}
+
+export function deriveDeterministicUserId(googleSub: string): string {
+  const cleanSub = String(googleSub).trim();
+  const digest = crypto.createHash('sha256').update(`coinpulse_google:${cleanSub}`).digest('hex').slice(0, 16);
+  return `usr_g_${digest}`;
+}
+
+export function generateStateCheckpoint(userId: string): string | null {
+  const user = db.getUserById(userId);
+  if (!user) return null;
+  const balance = db.getBalance(userId);
+  const miningState = db.getMiningState(userId);
+
+  const payload: StateCheckpointPayload = {
+    userId: user.id,
+    googleId: user.googleId,
+    email: user.email,
+    username: user.username,
+    picture: user.picture,
+    referralCode: user.referralCode,
+    role: user.role,
+    baseMiningRate: user.baseMiningRate,
+    bonusMiningRate: user.bonusMiningRate,
+    totalMiningRate: user.totalMiningRate,
+    totalBalance: balance.totalBalance,
+    totalMined: balance.totalMined,
+    totalReferralBonus: balance.totalReferralBonus,
+    lastMinedAt: miningState.lastMinedAt,
+    currentCycleStartTime: miningState.currentCycleStartTime,
+    nextMiningAvailableAt: miningState.nextMiningAvailableAt,
+    totalCyclesCompleted: miningState.totalCyclesCompleted,
+    iat: Date.now(),
+  };
+
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', AUTH_SECRET)
+    .update(`ckpt:${payloadB64}`)
+    .digest('base64url');
+
+  return `${payloadB64}.${signature}`;
+}
+
+export function verifyStateCheckpoint(checkpointToken: string): StateCheckpointPayload | null {
+  try {
+    const parts = checkpointToken.split('.');
+    if (parts.length !== 2) return null;
+    const [payloadB64, signature] = parts;
+
+    const expectedSig = crypto
+      .createHmac('sha256', AUTH_SECRET)
+      .update(`ckpt:${payloadB64}`)
+      .digest('base64url');
+
+    const expectedBuffer = Buffer.from(expectedSig);
+    const actualBuffer = Buffer.from(signature);
+    if (expectedBuffer.length !== actualBuffer.length) return null;
+    if (!crypto.timingSafeEqual(expectedBuffer, actualBuffer)) return null;
+
+    return JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as StateCheckpointPayload;
+  } catch {
+    return null;
+  }
 }
 
 export function hashPassword(password: string): { hash: string; salt: string } {
@@ -39,8 +131,15 @@ export function verifyPassword(password: string, hash: string, salt: string): bo
 export function generateToken(user: User): string {
   const payload: TokenPayload = {
     userId: user.id,
+    googleId: user.googleId,
+    email: user.email,
     username: user.username,
+    picture: user.picture,
+    referralCode: user.referralCode,
     role: user.role,
+    baseMiningRate: user.baseMiningRate,
+    bonusMiningRate: user.bonusMiningRate,
+    totalMiningRate: user.totalMiningRate,
     iat: Date.now(),
     exp: Date.now() + TOKEN_EXPIRY_MS,
   };
@@ -101,10 +200,53 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     return;
   }
 
-  const user = db.getUserById(payload.userId);
-  if (!user) {
-    res.status(401).json({ success: false, error: 'Unauthorized: User account not found' });
-    return;
+  // Check if client supplied a server-signed HMAC state checkpoint header
+  const rawCheckpoint = req.headers['x-coinpulse-checkpoint'];
+  const checkpointStr = typeof rawCheckpoint === 'string' ? rawCheckpoint.trim() : '';
+  const verifiedCheckpoint = checkpointStr ? verifyStateCheckpoint(checkpointStr) : null;
+
+  let user = db.getUserById(payload.userId);
+  if (!user && payload.googleId) {
+    user = db.getUserByGoogleId(payload.googleId);
+  }
+  if (!user && payload.email) {
+    user = db.getUserByEmail(payload.email);
+  }
+
+  // Reconcile from verified server-signed checkpoint if present and matches user
+  if (
+    verifiedCheckpoint &&
+    (verifiedCheckpoint.userId === payload.userId ||
+      (payload.googleId && verifiedCheckpoint.googleId === payload.googleId) ||
+      (payload.email && verifiedCheckpoint.email === payload.email))
+  ) {
+    user = db.reconcileVerifiedCheckpoint(verifiedCheckpoint);
+  } else if (!user) {
+    // Self-heal user account from HMAC-verified session token if container restarted during 1h mining cooldown
+    const nowIso = new Date().toISOString();
+    const fallbackReferral =
+      payload.referralCode ||
+      payload.username.toUpperCase().slice(0, 4) +
+        crypto.createHash('sha256').update(payload.userId).digest('hex').slice(0, 4).toUpperCase();
+    const restoredUser: User = {
+      id: payload.userId,
+      googleId: payload.googleId,
+      username: payload.username,
+      email: payload.email || `${payload.username}@google.coinpulse.user`,
+      picture: payload.picture,
+      referralCode: fallbackReferral,
+      referredByUserId: null,
+      role: payload.role || 'user',
+      status: 'active',
+      baseMiningRate: payload.baseMiningRate ?? 0.12,
+      bonusMiningRate: payload.bonusMiningRate ?? 0.0,
+      totalMiningRate: payload.totalMiningRate ?? 0.12,
+      createdAt: nowIso,
+      lastLoginAt: nowIso,
+      lastActiveAt: nowIso,
+    };
+    const created = db.createUser(restoredUser, 0.0);
+    user = created.user;
   }
 
   if (user.status === 'suspended') {

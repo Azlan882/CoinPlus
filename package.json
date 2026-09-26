@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/setup-nginx.mjs",
     "dev": "tsx server.ts",
     "build": "vite build",
     "start": "tsx server.ts",

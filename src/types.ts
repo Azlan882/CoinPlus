@@ -41,6 +41,7 @@ export interface MiningStatusResponse {
   bonusMiningRate: number;
   totalMiningRate: number;
   activeReferralsCount: number;
+  stateCheckpoint?: string;
   serverTime: number;
 }
 

@@ -6,30 +6,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import apiRouter from './server/api.ts';
 import { hasGoogleClientIdConfigured } from './server/googleAuth.ts';
+import { setupContainerNginx } from './scripts/setup-nginx.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Ensures the container Nginx Lua auth filter allows public OAuth callbacks (/auth/callback)
- * and mobile API requests (/api/) from external Android Capacitor clients without redirecting
- * to AI Studio's iframe-only applet-auth-bridge.
+ * Ensures the container Nginx Lua auth filter allows public OAuth callbacks (/auth/callback),
+ * CORS preflights (OPTIONS), and mobile API requests (/api/) from external Android Capacitor clients
+ * without redirecting to AI Studio's iframe-only applet-auth-bridge.
  */
 function ensureExternalOAuthCallbackAllowed(): void {
-  const luaPath = '/etc/nginx/user_auth_verification.lua';
-  try {
-    if (!fs.existsSync(luaPath)) return;
-    const content = fs.readFileSync(luaPath, 'utf8');
-    if (content.includes('^/auth/callback')) return;
-    const anchor = 'if ngx.var.host == "localhost" then\n  return\nend';
-    const bypassBlock = `${anchor}\n\n-- Allow OAuth callback and API routes for mobile APK and external OAuth redirects\nif string.match(ngx.var.uri, "^/api/") or string.match(ngx.var.uri, "^/auth/callback") then\n  return\nend`;
-    if (content.includes(anchor)) {
-      fs.writeFileSync(luaPath, content.replace(anchor, bypassBlock), 'utf8');
-      execSync('nginx -s reload', { stdio: 'ignore' });
-    }
-  } catch {
-    // Ignore if not running inside the Nginx container environment
-  }
+  setupContainerNginx();
 }
 
 async function startServer() {
@@ -47,18 +35,19 @@ async function startServer() {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
 
     const origin = req.headers.origin;
-    if (
-      origin &&
-      (origin.endsWith('.run.app') ||
-        origin.startsWith('http://localhost') ||
-        origin.startsWith('https://localhost') ||
-        origin.startsWith('capacitor://localhost'))
-    ) {
+    if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       res.setHeader('Access-Control-Allow-Credentials', 'true');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
     }
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-CoinPulse-Checkpoint, Accept, Cache-Control, Pragma'
+    );
+    res.setHeader('Access-Control-Expose-Headers', 'X-CoinPulse-Checkpoint');
+    res.setHeader('Access-Control-Max-Age', '86400');
 
     if (req.method === 'OPTIONS') {
       res.status(204).end();

@@ -411,16 +411,19 @@ export default function App() {
         'success'
       );
 
-      // Re-sync all states with server
-      await syncServerData();
+      // Re-sync all states with server in background
+      syncServerData();
       if (currentTab === 'team') {
         fetchReferrals();
       }
     } catch (err: any) {
       sounds.playCooldownBuzz();
+      if (err?.data?.miningState) {
+        applyAuthoritativeMiningStatus(err.data.miningState);
+      } else {
+        syncServerData();
+      }
       showNotification(err.message || 'Mining cycle could not be processed', 'error');
-      // If error due to cooldown, re-sync to get correct server timer
-      syncServerData();
     } finally {
       setIsMiningLoading(false);
     }

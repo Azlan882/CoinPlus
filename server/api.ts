@@ -7,6 +7,8 @@ import {
   requireAuth,
   requireAdmin,
   AuthenticatedRequest,
+  deriveDeterministicUserId,
+  generateStateCheckpoint,
 } from './auth.ts';
 import {
    verifyGoogleIdToken,
@@ -46,6 +48,7 @@ function buildAuthoritativeMiningStatus(user: User) {
 
   const referrals = db.getReferralsByInviter(freshUser.id);
   const activeReferralsCount = referrals.filter((r) => r.status === 'activated').length;
+  const stateCheckpoint = generateStateCheckpoint(freshUser.id) || undefined;
 
   return {
     userId: freshUser.id,
@@ -61,6 +64,7 @@ function buildAuthoritativeMiningStatus(user: User) {
     bonusMiningRate: freshUser.bonusMiningRate,
     totalMiningRate: freshUser.totalMiningRate,
     activeReferralsCount,
+    stateCheckpoint,
     serverTime: now,
   };
 }
@@ -425,9 +429,10 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
         }
       }
 
-      const userId = `usr_${crypto.randomBytes(8).toString('hex')}`;
+      const userId = deriveDeterministicUserId(googleSub);
       const generatedReferralCode =
-        candidateUsername.toUpperCase().slice(0, 4) + crypto.randomBytes(2).toString('hex').toUpperCase();
+        candidateUsername.toUpperCase().slice(0, 4) +
+        crypto.createHash('sha256').update(googleSub).digest('hex').slice(0, 4).toUpperCase();
 
       const newUser: User = {
         id: userId,
@@ -485,10 +490,14 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
     const token = generateToken(user);
     const balance = db.getBalance(user.id);
     const miningState = buildAuthoritativeMiningStatus(user);
+    if (miningState.stateCheckpoint) {
+      res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
+    }
 
     const responsePayload = {
       success: true,
       token,
+      stateCheckpoint: miningState.stateCheckpoint,
       user: sanitizeUser(user),
       balance,
       miningState,
@@ -538,11 +547,16 @@ router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response): 
   const referrals = db.getReferralsByInviter(user.id);
   const rateHistory = db.getRateHistory(user.id);
 
+  if (miningState.stateCheckpoint) {
+    res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
+  }
+
   res.json({
     success: true,
     user: sanitizeUser(freshUser),
     balance,
     miningState,
+    stateCheckpoint: miningState.stateCheckpoint,
     referralStats: {
       totalReferrals: referrals.length,
       activatedReferrals: referrals.filter((r) => r.status === 'activated').length,
@@ -566,21 +580,29 @@ router.post('/mine', requireAuth, async (req: AuthenticatedRequest, res: Respons
 
   if (!result.success) {
     const miningState = buildAuthoritativeMiningStatus(user);
+    if (miningState.stateCheckpoint) {
+      res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
+    }
     res.status(result.status).json({
       success: false,
       error: result.error,
       remainingSeconds: result.remainingSeconds,
       miningState,
+      stateCheckpoint: miningState.stateCheckpoint,
       serverTime: miningState.serverTime,
     });
     return;
   }
 
   const miningState = buildAuthoritativeMiningStatus(user);
+  if (miningState.stateCheckpoint) {
+    res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
+  }
   res.status(200).json({
     success: true,
     ...result.data,
     miningState,
+    stateCheckpoint: miningState.stateCheckpoint,
     serverTime: miningState.serverTime,
   });
 });
@@ -588,6 +610,9 @@ router.post('/mine', requireAuth, async (req: AuthenticatedRequest, res: Respons
 router.get('/mining/status', requireAuth, (req: AuthenticatedRequest, res: Response): void => {
   const user = db.getUserById(req.user!.id) || req.user!;
   const miningState = buildAuthoritativeMiningStatus(user);
+  if (miningState.stateCheckpoint) {
+    res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
+  }
 
   res.json({
     success: true,

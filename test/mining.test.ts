@@ -1,6 +1,14 @@
 import assert from 'node:assert';
 import { db } from '../server/db.ts';
-import { hashPassword, verifyPassword, generateToken, verifyToken } from '../server/auth.ts';
+import {
+  hashPassword,
+  verifyPassword,
+  generateToken,
+  verifyToken,
+  deriveDeterministicUserId,
+  generateStateCheckpoint,
+  verifyStateCheckpoint,
+} from '../server/auth.ts';
 import { processMineRequest } from '../server/miningService.ts';
 import { User, ReferralRecord } from '../server/types.ts';
 
@@ -352,6 +360,80 @@ async function runTests() {
     assert.strictEqual(stateA.nextMiningAvailableAt, db.getMiningState(userA.id).nextMiningAvailableAt);
     assert(Math.abs(device1Remaining - device2Remaining) <= 1, 'Both devices must compute identical remaining cooldown');
     assert.strictEqual(balanceA.totalBalance, db.getBalance(userA.id).totalBalance, 'Both devices must see identical balance');
+  });
+
+  // 13. Multi-Cycle Continuity (First Mine -> Complete 1st Cycle -> Second Mine -> Third Mine + Checkpoint Recovery)
+  await test('Multi-Cycle & Checkpoint Continuity: 1st, 2nd, and 3rd hourly cycles succeed even across container restarts', async () => {
+    const googleSub = `google_multicycle_${Date.now()}`;
+    const deterministicId = deriveDeterministicUserId(googleSub);
+    const cycleUser: User = {
+      id: deterministicId,
+      googleId: googleSub,
+      username: `multiminer_${Date.now().toString().slice(-4)}`,
+      email: `multiminer_${Date.now()}@gmail.com`,
+      referralCode: `MC_${Date.now().toString().slice(-4)}`,
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(cycleUser, 0.0);
+
+    // Cycle 1: First Mine
+    const cycle1 = await processMineRequest(cycleUser, '127.0.0.1', 'CoinPulse-APK/1.0');
+    assert(cycle1.success, '1st mining cycle must succeed');
+    assert.strictEqual(cycle1.data?.sessionNumber, 1, 'Session number must be 1');
+    assert.strictEqual(cycle1.data?.newBalance, 0.12, 'Balance after 1st cycle must be 0.12 CP');
+
+    // Generate server-signed HMAC state checkpoint after Cycle 1
+    const ckptAfterCycle1 = generateStateCheckpoint(cycleUser.id);
+    assert(ckptAfterCycle1, 'Server must generate HMAC state checkpoint after Cycle 1');
+    const verifiedCkpt1 = verifyStateCheckpoint(ckptAfterCycle1!);
+    assert(verifiedCkpt1, 'Checkpoint signature must verify');
+    assert.strictEqual(verifiedCkpt1?.totalBalance, 0.12);
+    assert.strictEqual(verifiedCkpt1?.totalCyclesCompleted, 1);
+
+    // Simulate 1-hour cooldown completion for Cycle 1
+    const pastEnd1 = Date.now() - 5000;
+    db.updateMiningState(cycleUser.id, {
+      currentCycleStartTime: pastEnd1 - 3600 * 1000,
+      lastMinedAt: pastEnd1 - 3600 * 1000,
+      nextMiningAvailableAt: pastEnd1,
+      isMiningActive: true,
+    });
+
+    // Re-issue checkpoint reflecting expired cooldown and reconcile
+    const ckptReadyForCycle2 = generateStateCheckpoint(cycleUser.id)!;
+    const parsedCkpt2 = verifyStateCheckpoint(ckptReadyForCycle2)!;
+    const reconciledUser = db.reconcileVerifiedCheckpoint(parsedCkpt2);
+    assert.strictEqual(reconciledUser.id, cycleUser.id, 'Deterministic user ID must be preserved');
+
+    // Cycle 2: Second Mine
+    const cycle2 = await processMineRequest(reconciledUser, '127.0.0.1', 'CoinPulse-APK/1.0');
+    assert(cycle2.success, '2nd mining cycle must succeed');
+    assert.strictEqual(cycle2.data?.sessionNumber, 2, 'Session number must be 2');
+    assert.strictEqual(cycle2.data?.newBalance, 0.24, 'Balance after 2nd cycle must be 0.24 CP');
+
+    // Simulate 1-hour cooldown completion for Cycle 2
+    const pastEnd2 = Date.now() - 5000;
+    db.updateMiningState(cycleUser.id, {
+      currentCycleStartTime: pastEnd2 - 3600 * 1000,
+      lastMinedAt: pastEnd2 - 3600 * 1000,
+      nextMiningAvailableAt: pastEnd2,
+      isMiningActive: true,
+    });
+
+    // Cycle 3: Third Mine
+    const cycle3 = await processMineRequest(reconciledUser, '127.0.0.1', 'CoinPulse-APK/1.0');
+    assert(cycle3.success, '3rd mining cycle must succeed');
+    assert.strictEqual(cycle3.data?.sessionNumber, 3, 'Session number must be 3');
+    assert.strictEqual(cycle3.data?.newBalance, 0.36, 'Balance after 3rd cycle must be 0.36 CP');
+    assert(db.verifyBalanceIntegrity(cycleUser.id).isValid, 'Ledger integrity must remain valid across all 3 cycles');
   });
 
   console.log(`\n========================================`);

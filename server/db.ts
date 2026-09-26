@@ -351,6 +351,105 @@ class Database {
     this.save();
   }
 
+  reconcileVerifiedCheckpoint(ckpt: {
+    userId: string;
+    googleId?: string;
+    email: string;
+    username: string;
+    picture?: string;
+    referralCode: string;
+    role: 'user' | 'admin';
+    baseMiningRate: number;
+    bonusMiningRate: number;
+    totalMiningRate: number;
+    totalBalance: number;
+    totalMined: number;
+    totalReferralBonus: number;
+    lastMinedAt: number | null;
+    currentCycleStartTime: number | null;
+    nextMiningAvailableAt: number;
+    totalCyclesCompleted: number;
+  }): User {
+    let user = this.getUserById(ckpt.userId);
+    if (!user && ckpt.googleId) {
+      user = this.getUserByGoogleId(ckpt.googleId);
+    }
+    if (!user && ckpt.email) {
+      user = this.getUserByEmail(ckpt.email);
+    }
+
+    const nowIso = new Date().toISOString();
+    if (!user) {
+      const restoredUser: User = {
+        id: ckpt.userId,
+        googleId: ckpt.googleId,
+        username: ckpt.username,
+        email: ckpt.email,
+        picture: ckpt.picture,
+        referralCode: ckpt.referralCode,
+        referredByUserId: null,
+        role: ckpt.role || 'user',
+        status: 'active',
+        baseMiningRate: ckpt.baseMiningRate ?? 0.12,
+        bonusMiningRate: ckpt.bonusMiningRate ?? 0.0,
+        totalMiningRate: ckpt.totalMiningRate ?? 0.12,
+        createdAt: nowIso,
+        lastLoginAt: nowIso,
+        lastActiveAt: nowIso,
+      };
+      this.createUser(restoredUser, 0.0);
+      user = restoredUser;
+    } else if (ckpt.totalMiningRate > user.totalMiningRate) {
+      user =
+        this.updateUser(user.id, {
+          baseMiningRate: ckpt.baseMiningRate,
+          bonusMiningRate: ckpt.bonusMiningRate,
+          totalMiningRate: ckpt.totalMiningRate,
+        }) || user;
+    }
+
+    const currentMining = this.getMiningState(user.id);
+    if (
+      ckpt.totalCyclesCompleted > currentMining.totalCyclesCompleted ||
+      ckpt.nextMiningAvailableAt > currentMining.nextMiningAvailableAt
+    ) {
+      this.updateMiningState(user.id, {
+        isMiningActive: ckpt.nextMiningAvailableAt > Date.now(),
+        currentCycleStartTime: ckpt.currentCycleStartTime,
+        lastMinedAt: ckpt.lastMinedAt,
+        nextMiningAvailableAt: ckpt.nextMiningAvailableAt,
+        totalCyclesCompleted: Math.max(currentMining.totalCyclesCompleted, ckpt.totalCyclesCompleted),
+      });
+    }
+
+    const currentBalance = this.getBalance(user.id);
+    if (ckpt.totalBalance > currentBalance.totalBalance + 0.000001) {
+      const diff = Number((ckpt.totalBalance - currentBalance.totalBalance).toFixed(6));
+      const updatedBalance: BalanceRecord = {
+        userId: user.id,
+        totalBalance: Number(ckpt.totalBalance.toFixed(6)),
+        totalMined: Number(Math.max(currentBalance.totalMined, ckpt.totalMined).toFixed(6)),
+        totalReferralBonus: Number(Math.max(currentBalance.totalReferralBonus, ckpt.totalReferralBonus).toFixed(6)),
+        lastCalculatedAt: nowIso,
+        integrityChecksum: this.calculateChecksum(user.id, Number(ckpt.totalBalance.toFixed(6))),
+      };
+      this.data.balances[user.id] = updatedBalance;
+      this.data.transactions.unshift({
+        id: `tx_${Date.now()}_ckpt`,
+        userId: user.id,
+        type: 'mining_reward',
+        amount: diff,
+        balanceBefore: currentBalance.totalBalance,
+        balanceAfter: updatedBalance.totalBalance,
+        description: `Verified server mining ledger continuity (${ckpt.totalCyclesCompleted} cycle(s))`,
+        timestamp: nowIso,
+      });
+      this.save();
+    }
+
+    return user;
+  }
+
   getMiningSessions(userId: string, limit: number = 20): MiningSession[] {
     return this.data.miningSessions.filter((s) => s.userId === userId).slice(0, limit);
   }

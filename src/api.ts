@@ -10,6 +10,7 @@ import {
 } from './types.ts';
 
 const TOKEN_KEY = 'coinpulse_session_token';
+const CHECKPOINT_KEY = 'coinpulse_state_checkpoint';
 
 const DEV_BACKEND_URL =
   'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app';
@@ -19,6 +20,11 @@ const PRE_BACKEND_URL =
 declare const __COINPULSE_APP_URL__: string | undefined;
 
 let resolvedNativeBackendUrl: string | null = null;
+
+export interface ApiError extends Error {
+  status?: number;
+  data?: any;
+}
 
 export function isNativeCapacitorOrigin(): boolean {
   if (typeof window === 'undefined') return false;
@@ -53,92 +59,237 @@ function getFallbackBackendUrl(currentBase: string): string {
   return currentBase === DEV_BACKEND_URL ? PRE_BACKEND_URL : DEV_BACKEND_URL;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 class ApiService {
   private token: string | null = null;
+  private checkpoint: string | null = null;
 
   constructor() {
-    this.token = localStorage.getItem(TOKEN_KEY);
+    if (typeof window !== 'undefined') {
+      try {
+        this.token = localStorage.getItem(TOKEN_KEY);
+        this.checkpoint = localStorage.getItem(CHECKPOINT_KEY);
+      } catch {}
+    }
   }
 
   getToken(): string | null {
     if (!this.token && typeof window !== 'undefined') {
-      const stored = localStorage.getItem(TOKEN_KEY);
-      if (stored) {
-        this.token = stored;
-      }
+      try {
+        const stored = localStorage.getItem(TOKEN_KEY);
+        if (stored) {
+          this.token = stored;
+        }
+      } catch {}
     }
     return this.token;
   }
 
   setToken(token: string | null) {
     this.token = token;
-    if (token) {
-      localStorage.setItem(TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(TOKEN_KEY);
+    if (typeof window !== 'undefined') {
+      try {
+        if (token) {
+          localStorage.setItem(TOKEN_KEY, token);
+        } else {
+          localStorage.removeItem(TOKEN_KEY);
+        }
+      } catch {}
+    }
+  }
+
+  getCheckpoint(): string | null {
+    if (!this.checkpoint && typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem(CHECKPOINT_KEY);
+        if (stored) {
+          this.checkpoint = stored;
+        }
+      } catch {}
+    }
+    return this.checkpoint;
+  }
+
+  setCheckpoint(checkpoint: string | null) {
+    this.checkpoint = checkpoint;
+    if (typeof window !== 'undefined') {
+      try {
+        if (checkpoint) {
+          localStorage.setItem(CHECKPOINT_KEY, checkpoint);
+        } else {
+          localStorage.removeItem(CHECKPOINT_KEY);
+        }
+      } catch {}
+    }
+  }
+
+  private captureCheckpointFromResponse(response: Response, data: any) {
+    const headerCkpt = response.headers.get('X-CoinPulse-Checkpoint');
+    const bodyCkpt =
+      (data && typeof data.stateCheckpoint === 'string' && data.stateCheckpoint) ||
+      (data?.miningState && typeof data.miningState.stateCheckpoint === 'string' && data.miningState.stateCheckpoint) ||
+      (data?.session && typeof data.session.stateCheckpoint === 'string' && data.session.stateCheckpoint);
+    const ckpt = headerCkpt || bodyCkpt;
+    if (ckpt) {
+      this.setCheckpoint(ckpt);
     }
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      Accept: 'application/json',
       ...(options.headers as Record<string, string>),
     };
+
+    if (options.body !== undefined && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
 
     const currentToken = this.getToken();
     if (currentToken) {
       headers['Authorization'] = `Bearer ${currentToken}`;
     }
 
-    const baseUrl = getApiBaseUrl();
-    const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
-
-    try {
-      let response = await fetch(url, {
-        cache: 'no-store',
-        ...options,
-        headers,
-      });
-
-      // Automatic failover between ais-dev and ais-pre when running inside Android Capacitor APK
-      if (
-        !endpoint.startsWith('http') &&
-        isNativeCapacitorOrigin() &&
-        (response.status === 404 || response.status === 502 || response.status === 503)
-      ) {
-        const altBase = getFallbackBackendUrl(baseUrl);
-        try {
-          const altRes = await fetch(`${altBase}${endpoint}`, {
-            cache: 'no-store',
-            ...options,
-            headers,
-          });
-          if (altRes.ok || altRes.status !== 404) {
-            resolvedNativeBackendUrl = altBase;
-            response = altRes;
-          }
-        } catch {
-          // Keep original response if fallback fails
-        }
-      }
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          // Token expired or invalid
-          this.setToken(null);
-        }
-        throw new Error(data.error || `Request failed with status ${response.status}`);
-      }
-
-      return data as T;
-    } catch (err: any) {
-      if (err.name === 'TypeError' && err.message.includes('fetch')) {
-        throw new Error('Network connection issue. Please check your internet connection.');
-      }
-      throw err;
+    const currentCheckpoint = this.getCheckpoint();
+    if (currentCheckpoint) {
+      headers['X-CoinPulse-Checkpoint'] = currentCheckpoint;
     }
+
+    const baseUrl = getApiBaseUrl();
+    const isAbsolute = endpoint.startsWith('http');
+    const primaryUrl = isAbsolute ? endpoint : `${baseUrl}${endpoint}`;
+    const isNative = !isAbsolute && isNativeCapacitorOrigin();
+
+    let response: Response | null = null;
+    let rawText = '';
+    let lastNetworkError: any = null;
+
+    // Up to 3 attempts to handle stale Android WebView keep-alive sockets after 1h idle or Cloud Run cold-start warmup
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        response = await fetch(primaryUrl, {
+          cache: 'no-store',
+          mode: 'cors',
+          ...options,
+          headers,
+        });
+
+        rawText = await response.text();
+        const isWarmupHtml =
+          response.headers.get('X-CoinPulse-Warmup') === '1' ||
+          response.status === 502 ||
+          response.status === 503 ||
+          response.status === 504 ||
+          (rawText.trim().startsWith('<!') && rawText.includes('Starting Server'));
+
+        if (isWarmupHtml && attempt < maxAttempts) {
+          await sleep(600 * attempt);
+          continue;
+        }
+
+        // If running inside Android APK and primary returns 404/502/503, probe fallback URL
+        if (isNative && (response.status === 404 || isWarmupHtml)) {
+          const altBase = getFallbackBackendUrl(baseUrl);
+          try {
+            const altRes = await fetch(`${altBase}${endpoint}`, {
+              cache: 'no-store',
+              mode: 'cors',
+              ...options,
+              headers,
+            });
+            const altText = await altRes.text();
+            const altIsWarmup =
+              altRes.status === 404 ||
+              altRes.status === 502 ||
+              altRes.status === 503 ||
+              (altText.trim().startsWith('<!') && altText.includes('Starting Server'));
+            if (altRes.ok || !altIsWarmup) {
+              resolvedNativeBackendUrl = altBase;
+              response = altRes;
+              rawText = altText;
+            }
+          } catch {
+            // Keep primary response if fallback is unreachable
+          }
+        }
+
+        break;
+      } catch (fetchErr: any) {
+        lastNetworkError = fetchErr;
+        // On Android APK, if primary URL threw TypeError (e.g. stale socket or cold-start), probe fallback or retry
+        if (isNative) {
+          const altBase = getFallbackBackendUrl(baseUrl);
+          try {
+            const altRes = await fetch(`${altBase}${endpoint}`, {
+              cache: 'no-store',
+              mode: 'cors',
+              ...options,
+              headers,
+            });
+            const altText = await altRes.text();
+            if (altRes.ok || (altRes.status !== 404 && !altText.trim().startsWith('<!'))) {
+              resolvedNativeBackendUrl = altBase;
+              response = altRes;
+              rawText = altText;
+              lastNetworkError = null;
+              break;
+            }
+          } catch {
+            // Fallback also failed; continue retry loop on primary
+          }
+        }
+
+        if (attempt < maxAttempts) {
+          await sleep(450 * attempt);
+          continue;
+        }
+      }
+    }
+
+    if (!response) {
+      console.error(`[CoinPulse API] Network failure on ${options.method || 'GET'} ${primaryUrl}:`, lastNetworkError);
+      throw new Error('Network connection issue. Please check your internet connection.');
+    }
+
+    let data: any = null;
+    if (rawText && rawText.trim().length > 0) {
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = null;
+      }
+    }
+
+    this.captureCheckpointFromResponse(response, data);
+
+    if (!response.ok) {
+      if (response.status === 401 && !endpoint.startsWith('/api/auth/google')) {
+        // Session token rejected by server
+        this.setToken(null);
+      }
+      const serverMessage =
+        (data && typeof data.error === 'string' && data.error) ||
+        (data && typeof data.message === 'string' && data.message) ||
+        `Server returned HTTP ${response.status}`;
+      console.warn(
+        `[CoinPulse API] HTTP ${response.status} on ${options.method || 'GET'} ${endpoint}:`,
+        serverMessage
+      );
+      const apiErr: ApiError = new Error(serverMessage);
+      apiErr.status = response.status;
+      apiErr.data = data;
+      throw apiErr;
+    }
+
+    if (!data || typeof data !== 'object') {
+      throw new Error(`Unexpected non-JSON response (HTTP ${response.status}) from server. Please retry.`);
+    }
+
+    return data as T;
   }
 
   // --- Auth ---
@@ -257,6 +408,7 @@ class ApiService {
 
   logout() {
     this.setToken(null);
+    this.setCheckpoint(null);
   }
 
   // --- Mining ---
@@ -273,9 +425,11 @@ class ApiService {
       referralActivated: boolean;
       message: string;
       miningState?: MiningStatusResponse;
+      stateCheckpoint?: string;
       serverTime: number;
     }>('/api/mine', {
       method: 'POST',
+      body: JSON.stringify({ clientTimestamp: Date.now() }),
     });
   }
 
