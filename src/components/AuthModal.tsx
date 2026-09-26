@@ -32,7 +32,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
-  const [hasGoogleClientId, setHasGoogleClientId] = useState<boolean | null>(null);
+  const [googleClientId, setGoogleClientId] = useState<string>(
+    '705048511305-64rki2ql9ishnriq7g1o4sbdbsdclgi7.apps.googleusercontent.com'
+  );
+  const [hasGoogleClientId, setHasGoogleClientId] = useState<boolean | null>(true);
   const [authSessionId, setAuthSessionId] = useState<string>(() => generateClientAuthSessionId());
   const [prefetchedAuthUrl, setPrefetchedAuthUrl] = useState<string>('');
   const [showConfigHelp, setShowConfigHelp] = useState(false);
@@ -40,6 +43,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [showManualInput, setShowManualInput] = useState(false);
 
   const completedRef = useRef(false);
+  const referralCodeRef = useRef(referralCode);
+  referralCodeRef.current = referralCode;
 
   // Sync initial referral code from URL or invites
   useEffect(() => {
@@ -60,6 +65,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         if (!isMounted) return;
         const isConfigured = Boolean(cfg.hasGoogleClientId || cfg.configured);
         setHasGoogleClientId(isConfigured);
+        if (cfg.clientId) {
+          setGoogleClientId(cfg.clientId);
+        }
 
         if (isConfigured) {
           const platform = isNativeCapacitorOrigin() ? 'capacitor' : 'web';
@@ -124,7 +132,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setInfoMessage(null);
 
     try {
-      const res = await api.loginWithGoogle(tokenString.trim(), referralCode.trim() || undefined);
+      const res = await api.loginWithGoogle(
+        tokenString.trim(),
+        referralCodeRef.current.trim() || undefined
+      );
       completeWithVerifiedSession(res);
     } catch (err: any) {
       setError(err.message || 'Google authentication failed. Please try again.');
@@ -135,15 +146,64 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   /**
    * OAuth 2.0 Flow (Standard Web, AI Studio Iframe & Android Capacitor compatible)
-   * Opens Google's OAuth authorization screen directly (never about:blank) and receives
-   * the completed CoinPulse session via postMessage, BroadcastChannel, storage, and server polling.
+   *
+   * 1. When Google Identity Services (`window.google.accounts.oauth2.initTokenClient`) is loaded
+   *    and the current origin is an Authorized JavaScript Origin (.run.app), uses Google's official
+   *    storagerelay:// popup channel so the popup returns the OAuth token directly to this window
+   *    without triggering AI Studio's top-level proxy auth bridge redirect on /auth/callback.
+   * 2. Falls back to the /api/auth/google/start -> /auth/callback + server-polling flow for
+   *    Android Capacitor WebViews or environments where gsi/client is unavailable.
    */
   const handleDirectOAuthFlow = async () => {
     setError(null);
     setInfoMessage(null);
     completedRef.current = false;
 
-    const platform = isNativeCapacitorOrigin() ? 'capacitor' : 'web';
+    const isCap = isNativeCapacitorOrigin();
+    if (!isCap && googleClientId && window.google?.accounts?.oauth2?.initTokenClient) {
+      try {
+        setIsLoading(true);
+        const tokenClient = window.google.accounts.oauth2.initTokenClient({
+          client_id: googleClientId,
+          scope: 'openid email profile',
+          prompt: 'select_account',
+          callback: (tokenResponse: any) => {
+            if (tokenResponse?.error) {
+              setIsLoading(false);
+              setError(
+                tokenResponse.error_description ||
+                  (tokenResponse.error === 'access_denied'
+                    ? 'Google sign-in was cancelled.'
+                    : `Google authentication error: ${tokenResponse.error}`)
+              );
+              return;
+            }
+            if (tokenResponse?.access_token) {
+              handleGoogleTokenSubmit(tokenResponse.access_token);
+            } else {
+              setIsLoading(false);
+              setError('No Google credential was returned. Please try again.');
+            }
+          },
+          error_callback: (err: any) => {
+            setIsLoading(false);
+            if (err?.type === 'popup_closed') {
+              setError('Google sign-in window was closed before completing authentication.');
+            } else if (err?.type === 'popup_failed_to_open') {
+              setInfoMessage('Popup was blocked by your browser. Please allow popups for CoinPulse.');
+            } else {
+              setError(err?.message || 'Google sign-in was cancelled.');
+            }
+          },
+        });
+        tokenClient.requestAccessToken({ prompt: 'select_account' });
+        return;
+      } catch (gisErr) {
+        console.warn('GIS initTokenClient fallback to direct OAuth popup:', gisErr);
+      }
+    }
+
+    const platform = isCap ? 'capacitor' : 'web';
     const activeSid = authSessionId;
 
     // Always open a real OAuth URL immediately (never about:blank)

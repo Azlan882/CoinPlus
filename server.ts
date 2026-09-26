@@ -47,7 +47,7 @@ async function startServer() {
   app.use('/api', apiRouter);
 
   // OAuth 2.0 / OpenID Connect callback page for Web, AI Studio iframe popups, and Android Capacitor
-  app.get(['/auth/callback', '/auth/callback/'], (_req, res) => {
+  app.get(['/auth/callback', '/auth/callback/', '/api/auth/google/callback'], (_req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.send(`<!DOCTYPE html>
@@ -232,6 +232,15 @@ async function startServer() {
           try {
             window.close();
           } catch (e) {}
+          setTimeout(function() {
+            if (!window.closed) {
+              if (sessionToken) {
+                window.location.replace('/?token=' + encodeURIComponent(sessionToken));
+              } else {
+                window.location.replace('/');
+              }
+            }
+          }, 400);
         }
 
         if (oauthError || !idToken) {

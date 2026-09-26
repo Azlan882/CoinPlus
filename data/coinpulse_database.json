@@ -471,9 +471,85 @@
       "createdAt": "2026-09-26T06:52:08.774Z",
       "lastLoginAt": "2026-09-26T06:52:08.774Z",
       "lastActiveAt": "2026-09-26T06:52:08.774Z"
+    },
+    "usr_test_a_1790407575465": {
+      "id": "usr_test_a_1790407575465",
+      "username": "miner_a_1790407575466",
+      "email": "minera_1790407575466@pulse.internal",
+      "passwordHash": "dummy",
+      "salt": "dummy",
+      "referralCode": "REF_A_1790",
+      "referredByUserId": null,
+      "role": "user",
+      "status": "active",
+      "baseMiningRate": 0.12,
+      "bonusMiningRate": 0.01,
+      "totalMiningRate": 0.13,
+      "createdAt": "2026-09-26T07:26:15.466Z",
+      "lastLoginAt": "2026-09-26T07:26:15.466Z",
+      "lastActiveAt": "2026-09-26T07:26:15.466Z"
+    },
+    "usr_test_b_1790407575470": {
+      "id": "usr_test_b_1790407575470",
+      "username": "miner_b_1790407575470",
+      "email": "minerb_1790407575470@pulse.internal",
+      "passwordHash": "dummy",
+      "salt": "dummy",
+      "referralCode": "REF_B_1790",
+      "referredByUserId": "usr_test_a_1790407575465",
+      "role": "user",
+      "status": "active",
+      "baseMiningRate": 0.12,
+      "bonusMiningRate": 0,
+      "totalMiningRate": 0.12,
+      "createdAt": "2026-09-26T07:26:15.470Z",
+      "lastLoginAt": "2026-09-26T07:26:15.470Z",
+      "lastActiveAt": "2026-09-26T07:26:15.470Z"
+    },
+    "usr_google_1790407575478": {
+      "id": "usr_google_1790407575478",
+      "googleId": "10987654321_1790407575478",
+      "username": "satoshi_575478",
+      "email": "satoshi_1790407575478@googlemail.internal",
+      "referralCode": "SA575478",
+      "referredByUserId": null,
+      "role": "user",
+      "status": "active",
+      "baseMiningRate": 0.12,
+      "bonusMiningRate": 0,
+      "totalMiningRate": 0.12,
+      "createdAt": "2026-09-26T07:26:15.478Z",
+      "lastLoginAt": "2026-09-26T07:26:15.478Z",
+      "lastActiveAt": "2026-09-26T07:26:15.478Z"
     }
   },
   "miningSessions": [
+    {
+      "id": "ses_1790407575472_575470",
+      "userId": "usr_test_b_1790407575470",
+      "sessionNumber": 1,
+      "cycleStartTime": 1790407575472,
+      "cycleEndTime": 1790411175472,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "TestSuite",
+      "status": "completed",
+      "createdAt": "2026-09-26T07:26:15.472Z"
+    },
+    {
+      "id": "ses_1790407575467_575465",
+      "userId": "usr_test_a_1790407575465",
+      "sessionNumber": 1,
+      "cycleStartTime": 1790407575467,
+      "cycleEndTime": 1790411175467,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "TestSuite",
+      "status": "completed",
+      "createdAt": "2026-09-26T07:26:15.468Z"
+    },
     {
       "id": "ses_1790405528768_528767",
       "userId": "usr_test_b_1790405528767",
@@ -985,6 +1061,30 @@
       "lastMinedAt": null,
       "nextMiningAvailableAt": 0,
       "totalCyclesCompleted": 0
+    },
+    "usr_test_a_1790407575465": {
+      "userId": "usr_test_a_1790407575465",
+      "isMiningActive": true,
+      "currentCycleStartTime": 1790407575467,
+      "lastMinedAt": 1790407575467,
+      "nextMiningAvailableAt": 1790411175467,
+      "totalCyclesCompleted": 1
+    },
+    "usr_test_b_1790407575470": {
+      "userId": "usr_test_b_1790407575470",
+      "isMiningActive": true,
+      "currentCycleStartTime": 1790407575472,
+      "lastMinedAt": 1790407575472,
+      "nextMiningAvailableAt": 1790411175472,
+      "totalCyclesCompleted": 1
+    },
+    "usr_google_1790407575478": {
+      "userId": "usr_google_1790407575478",
+      "isMiningActive": false,
+      "currentCycleStartTime": null,
+      "lastMinedAt": null,
+      "nextMiningAvailableAt": 0,
+      "totalCyclesCompleted": 0
     }
   },
   "balances": {
@@ -1211,6 +1311,30 @@
       "totalReferralBonus": 0,
       "lastCalculatedAt": "2026-09-26T06:52:08.774Z",
       "integrityChecksum": "17cbef5ef57b1a9cb537387783b67806c6808f6448cc850ae13591d05d7ca280"
+    },
+    "usr_test_a_1790407575465": {
+      "userId": "usr_test_a_1790407575465",
+      "totalBalance": 0.17,
+      "totalMined": 0.12,
+      "totalReferralBonus": 0.05,
+      "lastCalculatedAt": "2026-09-26T07:26:15.475Z",
+      "integrityChecksum": "4175bb6092ec891a68ccf01e250e015a8debad9bac2202f5940f82b0cd6fc966"
+    },
+    "usr_test_b_1790407575470": {
+      "userId": "usr_test_b_1790407575470",
+      "totalBalance": 0.12,
+      "totalMined": 0.12,
+      "totalReferralBonus": 0,
+      "lastCalculatedAt": "2026-09-26T07:26:15.472Z",
+      "integrityChecksum": "8ae95016c6feb2ab4b52349274e1adb89b8f367bcfe04f1393b4fab1846c0491"
+    },
+    "usr_google_1790407575478": {
+      "userId": "usr_google_1790407575478",
+      "totalBalance": 0,
+      "totalMined": 0,
+      "totalReferralBonus": 0,
+      "lastCalculatedAt": "2026-09-26T07:26:15.478Z",
+      "integrityChecksum": "8b1ebd6997ccd83a6b100f586249bbca00522856b1fcd9fa36560e0515941c08"
     }
   },
   "referrals": [
@@ -1323,6 +1447,16 @@
       "firstMiningCompletedAt": "2026-09-26T06:52:08.770Z",
       "rateBonusApplied": 0.01,
       "createdAt": "2026-09-26T06:52:08.768Z"
+    },
+    {
+      "id": "ref_1790407575471_test",
+      "inviterUserId": "usr_test_a_1790407575465",
+      "referredUserId": "usr_test_b_1790407575470",
+      "referralCodeUsed": "REF_A_1790",
+      "status": "activated",
+      "firstMiningCompletedAt": "2026-09-26T07:26:15.473Z",
+      "rateBonusApplied": 0.01,
+      "createdAt": "2026-09-26T07:26:15.471Z"
     }
   ],
   "rateHistory": [
@@ -1640,9 +1774,75 @@
       "newRate": 0.12,
       "changeReason": "initial_base",
       "timestamp": "2026-09-26T06:52:08.774Z"
+    },
+    {
+      "id": "rate_1790407575466_usr_test_a_1790407575465",
+      "userId": "usr_test_a_1790407575465",
+      "oldRate": 0,
+      "newRate": 0.12,
+      "changeReason": "initial_base",
+      "timestamp": "2026-09-26T07:26:15.466Z"
+    },
+    {
+      "id": "rate_1790407575471_usr_test_b_1790407575470",
+      "userId": "usr_test_b_1790407575470",
+      "oldRate": 0,
+      "newRate": 0.12,
+      "changeReason": "initial_base",
+      "timestamp": "2026-09-26T07:26:15.471Z"
+    },
+    {
+      "id": "rate_1790407575474_usr_test_a_1790407575465",
+      "userId": "usr_test_a_1790407575465",
+      "oldRate": 0.12,
+      "newRate": 0.13,
+      "changeReason": "referral_activated",
+      "triggeredByUserId": "usr_test_b_1790407575470",
+      "timestamp": "2026-09-26T07:26:15.474Z"
+    },
+    {
+      "id": "rate_1790407575478_usr_google_1790407575478",
+      "userId": "usr_google_1790407575478",
+      "oldRate": 0,
+      "newRate": 0.12,
+      "changeReason": "initial_base",
+      "timestamp": "2026-09-26T07:26:15.478Z"
     }
   ],
   "transactions": [
+    {
+      "id": "tx_1790407575475_6e6f86cc",
+      "userId": "usr_test_a_1790407575465",
+      "type": "referral_bonus",
+      "amount": 0.05,
+      "balanceBefore": 0.12,
+      "balanceAfter": 0.17,
+      "referenceId": "ref_1790407575471_test",
+      "description": "Referral milestone: miner_b_1790407575470 completed their 1st mining cycle! (+0.05 CP + 0.01/hr boost)",
+      "timestamp": "2026-09-26T07:26:15.475Z"
+    },
+    {
+      "id": "tx_1790407575472_6d286729",
+      "userId": "usr_test_b_1790407575470",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0,
+      "balanceAfter": 0.12,
+      "referenceId": "ses_1790407575472_575470",
+      "description": "Hourly mining cycle #1 completed (+0.12 CP)",
+      "timestamp": "2026-09-26T07:26:15.472Z"
+    },
+    {
+      "id": "tx_1790407575467_947b90f1",
+      "userId": "usr_test_a_1790407575465",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0,
+      "balanceAfter": 0.12,
+      "referenceId": "ses_1790407575467_575465",
+      "description": "Hourly mining cycle #1 completed (+0.12 CP)",
+      "timestamp": "2026-09-26T07:26:15.467Z"
+    },
     {
       "id": "tx_1790405528771_ab3c9f7d",
       "userId": "usr_test_a_1790405528763",
@@ -2018,6 +2218,20 @@
     }
   ],
   "securityEvents": [
+    {
+      "id": "sec_1790407575469_c32197",
+      "userId": "usr_test_a_1790407575465",
+      "eventType": "cooldown_violation",
+      "ipAddress": "127.0.0.1",
+      "userAgent": "TestSuite",
+      "metadata": {
+        "attemptedAt": 1790407575469,
+        "nextMiningAvailableAt": 1790411175467,
+        "remainingSeconds": 3600
+      },
+      "severity": "low",
+      "timestamp": "2026-09-26T07:26:15.470Z"
+    },
     {
       "id": "sec_1790405528766_d7e5ce",
       "userId": "usr_test_a_1790405528763",

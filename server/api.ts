@@ -98,13 +98,15 @@ function prunePendingAuthSessions(): void {
  * Reports whether GOOGLE_CLIENT_ID is configured at runtime without exposing the actual client ID.
  */
 router.get('/auth/google/config', (req: Request, res: Response): void => {
-  const hasGoogleClientId = hasGoogleClientIdConfigured();
+  const clientId = getConfiguredGoogleClientId();
+  const hasGoogleClientId = Boolean(clientId);
   const redirectUri = resolveGoogleRedirectUri(req);
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.json({
     success: true,
     configured: hasGoogleClientId,
     hasGoogleClientId,
+    clientId,
     appUrl: process.env.APP_URL || '',
     redirectUri,
   });

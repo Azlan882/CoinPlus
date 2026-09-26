@@ -98,6 +98,7 @@ class ApiService {
       success: boolean;
       configured: boolean;
       hasGoogleClientId: boolean;
+      clientId: string;
       appUrl: string;
       redirectUri: string;
     }>('/api/auth/google/config', {
