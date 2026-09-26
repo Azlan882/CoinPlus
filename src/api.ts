@@ -11,6 +11,27 @@ import {
 
 const TOKEN_KEY = 'coinpulse_session_token';
 
+declare const __COINPULSE_APP_URL__: string | undefined;
+
+function getApiBaseUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const { protocol, hostname, port } = window.location;
+  // In Capacitor Android WebView, origin is https://localhost or capacitor://localhost with no port
+  const isCapacitorLocalOrigin =
+    protocol === 'capacitor:' ||
+    protocol === 'file:' ||
+    ((hostname === 'localhost' || hostname === '127.0.0.1') && !port);
+
+  if (isCapacitorLocalOrigin) {
+    const configuredUrl =
+      typeof __COINPULSE_APP_URL__ !== 'undefined' && __COINPULSE_APP_URL__
+        ? __COINPULSE_APP_URL__
+        : 'https://ais-pre-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app';
+    return configuredUrl.replace(/\/+$/, '');
+  }
+  return '';
+}
+
 class ApiService {
   private token: string | null = null;
 
@@ -41,8 +62,10 @@ class ApiService {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
+    const url = endpoint.startsWith('http') ? endpoint : `${getApiBaseUrl()}${endpoint}`;
+
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetch(url, {
         ...options,
         headers,
       });
@@ -70,9 +93,30 @@ class ApiService {
   async getGoogleConfig() {
     return this.request<{
       success: boolean;
-      clientId: string;
+      configured: boolean;
+      hasGoogleClientId: boolean;
       appUrl: string;
-    }>('/api/auth/google/config');
+      redirectUri: string;
+    }>('/api/auth/google/config', {
+      cache: 'no-store',
+    });
+  }
+
+  async getGoogleAuthUrl(params?: { redirectUri?: string; referralCode?: string; origin?: string }) {
+    const search = new URLSearchParams();
+    if (params?.redirectUri) search.set('redirect_uri', params.redirectUri);
+    if (params?.referralCode) search.set('ref', params.referralCode);
+    if (params?.origin) search.set('origin', params.origin);
+    const qs = search.toString();
+    return this.request<{
+      success: boolean;
+      configured: boolean;
+      hasGoogleClientId: boolean;
+      redirectUri: string;
+      url: string;
+    }>(`/api/auth/google/url${qs ? `?${qs}` : ''}`, {
+      cache: 'no-store',
+    });
   }
 
   async loginWithGoogle(googleToken: string, referralCode?: string) {

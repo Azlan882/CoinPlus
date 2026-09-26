@@ -212,13 +212,14 @@ async function runTests() {
 
   // 11. Google-Only User Identity and Stable Subject ID
   await test('Google Authentication: Stable Google Subject ID and Account Linking', () => {
-    const googleSub = '109876543210987654321';
+    const uniqueSuffix = Date.now();
+    const googleSub = `10987654321_${uniqueSuffix}`;
     const googleUser: User = {
-      id: `usr_google_${Date.now()}`,
+      id: `usr_google_${uniqueSuffix}`,
       googleId: googleSub,
-      username: 'satoshi_google',
-      email: 'satoshi@googlemail.internal',
-      referralCode: 'SATO1234',
+      username: `satoshi_${uniqueSuffix.toString().slice(-6)}`,
+      email: `satoshi_${uniqueSuffix}@googlemail.internal`,
+      referralCode: `SA${uniqueSuffix.toString().slice(-6)}`,
       referredByUserId: null,
       role: 'user',
       status: 'active',
@@ -234,7 +235,7 @@ async function runTests() {
 
     const foundByGoogleId = db.getUserByGoogleId(googleSub);
     assert(foundByGoogleId, 'User must be resolvable by Google Subject sub ID');
-    assert.strictEqual(foundByGoogleId?.email, 'satoshi@googlemail.internal');
+    assert.strictEqual(foundByGoogleId?.email, googleUser.email);
     assert.strictEqual(foundByGoogleId?.googleId, googleSub);
 
     // Verify session token can be issued and verified for Google user

@@ -1,7 +1,9 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import apiRouter from './server/api.ts';
+import { hasGoogleClientIdConfigured } from './server/googleAuth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,10 +16,30 @@ async function startServer() {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  // Basic security headers
+  // Basic security & CORS headers (supporting Web + Android Capacitor WebView)
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+
+    const origin = req.headers.origin;
+    if (
+      origin &&
+      (origin.endsWith('.run.app') ||
+        origin.startsWith('http://localhost') ||
+        origin.startsWith('https://localhost') ||
+        origin.startsWith('capacitor://localhost'))
+    ) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+
     next();
   });
 
@@ -124,7 +146,9 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`CoinPulse full-stack server running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `CoinPulse full-stack server running on http://0.0.0.0:${PORT} (hasGoogleClientId=${hasGoogleClientIdConfigured()})`
+    );
   });
 }
 

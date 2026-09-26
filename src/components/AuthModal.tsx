@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Shield, Sparkles, AlertCircle, CheckCircle2, HelpCircle } from 'lucide-react';
 import { api } from '../api.ts';
 import { User, BalanceState, MiningStatusResponse } from '../types.ts';
@@ -27,12 +27,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
-  const [googleClientId, setGoogleClientId] = useState<string>('');
+  const [hasGoogleClientId, setHasGoogleClientId] = useState<boolean | null>(null);
+  const [prefetchedAuthUrl, setPrefetchedAuthUrl] = useState<string>('');
   const [showConfigHelp, setShowConfigHelp] = useState(false);
   const [manualToken, setManualToken] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
-
-  const googleButtonContainerRef = useRef<HTMLDivElement>(null);
 
   // Sync initial referral code from URL or invites
   useEffect(() => {
@@ -41,71 +40,39 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   }, [initialRefCode]);
 
-  // Fetch Google Client ID from backend
+  // Fetch Google Auth configuration & pre-build OAuth URL from backend
   useEffect(() => {
     if (!isOpen) return;
     let isMounted = true;
 
-    api
-      .getGoogleConfig()
-      .then((cfg) => {
+    const loadConfigAndUrl = async () => {
+      try {
+        const cfg = await api.getGoogleConfig();
         if (!isMounted) return;
-        if (cfg.clientId) {
-          setGoogleClientId(cfg.clientId);
+        const isConfigured = Boolean(cfg.hasGoogleClientId || cfg.configured);
+        setHasGoogleClientId(isConfigured);
+
+        if (isConfigured) {
+          const urlRes = await api.getGoogleAuthUrl({
+            redirectUri: `${window.location.origin}/auth/callback`,
+            referralCode: referralCode.trim() || undefined,
+            origin: window.location.origin,
+          });
+          if (isMounted && urlRes.url) {
+            setPrefetchedAuthUrl(urlRes.url);
+          }
         }
-      })
-      .catch((err) => {
-        console.warn('Failed to load Google client config:', err);
-      });
+      } catch (err) {
+        console.warn('Failed to load Google auth configuration:', err);
+      }
+    };
+
+    loadConfigAndUrl();
 
     return () => {
       isMounted = false;
     };
-  }, [isOpen]);
-
-  // Initialize Google Identity Services button once Client ID or container is ready
-  useEffect(() => {
-    if (!isOpen || !googleClientId) return;
-
-    const renderGoogleBtn = () => {
-      if (window.google?.accounts?.id && googleButtonContainerRef.current) {
-        try {
-          window.google.accounts.id.initialize({
-            client_id: googleClientId,
-            callback: (res: any) => {
-              if (res.credential) {
-                handleGoogleTokenSubmit(res.credential);
-              }
-            },
-            auto_select: false,
-            cancel_on_tap_outside: true,
-          });
-
-          googleButtonContainerRef.current.innerHTML = '';
-          window.google.accounts.id.renderButton(googleButtonContainerRef.current, {
-            type: 'standard',
-            theme: 'filled_black',
-            size: 'large',
-            text: 'continue_with',
-            shape: 'pill',
-            logo_alignment: 'left',
-            width: 280,
-          });
-        } catch (e) {
-          console.error('Google button render error:', e);
-        }
-      }
-    };
-
-    renderGoogleBtn();
-    const interval = setInterval(() => {
-      if (window.google?.accounts?.id && googleButtonContainerRef.current?.children.length === 0) {
-        renderGoogleBtn();
-      }
-    }, 400);
-
-    return () => clearInterval(interval);
-  }, [isOpen, googleClientId]);
+  }, [isOpen, referralCode]);
 
   if (!isOpen) return null;
 
@@ -132,45 +99,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   /**
    * OAuth 2.0 Popup Flow (Standard Web & Capacitor compatible OAuth redirect/popup)
+   * Requests the authorization URL from the backend so GOOGLE_CLIENT_ID is always read
+   * fresh from the server runtime environment.
    */
-  const handleDirectOAuthFlow = () => {
+  const handleDirectOAuthFlow = async () => {
     setError(null);
     setInfoMessage(null);
 
-    const clientId =
-      googleClientId ||
-      (window as any).__GOOGLE_CLIENT_ID__ ||
-      '';
-
-    if (!clientId) {
-      setError(
-        'Google Client ID is not yet configured. Please set GOOGLE_CLIENT_ID in your environment variables, or enter a token below.'
-      );
-      setShowConfigHelp(true);
-      return;
-    }
-
-    const redirectUri = `${window.location.origin}/auth/callback`;
-    const scope = encodeURIComponent('openid email profile');
-    const nonce = Math.random().toString(36).substring(2);
-    const state = JSON.stringify({
-      ref: referralCode.trim() || '',
-      origin: window.location.origin,
-    });
-
-    // Google OpenID Connect OAuth authorization URL
-    const googleAuthUrl =
-      `https://accounts.google.com/o/oauth2/v2/auth?` +
-      `client_id=${encodeURIComponent(clientId)}&` +
-      `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-      `response_type=id_token%20token&` +
-      `scope=${scope}&` +
-      `nonce=${nonce}&` +
-      `state=${encodeURIComponent(state)}&` +
-      `prompt=select_account`;
-
+    // Open popup synchronously on click gesture to prevent browser popup blockers
     const popup = window.open(
-      googleAuthUrl,
+      prefetchedAuthUrl || 'about:blank',
       'google_auth_popup',
       'width=500,height=650,left=150,top=100'
     );
@@ -182,12 +120,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setIsLoading(true);
 
-    // Listen for OAuth message or poll popup location hash
+    // If the URL wasn't prefetched yet (e.g. fast click or server just restarted), fetch it live now
+    if (!prefetchedAuthUrl) {
+      try {
+        const urlRes = await api.getGoogleAuthUrl({
+          redirectUri: `${window.location.origin}/auth/callback`,
+          referralCode: referralCode.trim() || undefined,
+          origin: window.location.origin,
+        });
+
+        if (!urlRes.hasGoogleClientId || !urlRes.url) {
+          popup.close();
+          setIsLoading(false);
+          setHasGoogleClientId(false);
+          setError(
+            'Google Client ID is not yet configured on the server. Please set GOOGLE_CLIENT_ID in your environment variables, or enter a token below.'
+          );
+          setShowConfigHelp(true);
+          return;
+        }
+
+        setHasGoogleClientId(true);
+        setPrefetchedAuthUrl(urlRes.url);
+        popup.location.href = urlRes.url;
+      } catch (err: any) {
+        popup.close();
+        setIsLoading(false);
+        setError(
+          err.message ||
+            'Google Client ID is not yet configured. Please set GOOGLE_CLIENT_ID in your environment variables, or enter a token below.'
+        );
+        setShowConfigHelp(true);
+        return;
+      }
+    }
+
+    // Listen for OAuth message from callback page
     const messageHandler = (event: MessageEvent) => {
       if (event.data?.type === 'GOOGLE_AUTH_SUCCESS' && event.data?.token) {
         window.removeEventListener('message', messageHandler);
         clearInterval(pollInterval);
         handleGoogleTokenSubmit(event.data.token);
+      } else if (event.data?.type === 'GOOGLE_AUTH_ERROR') {
+        window.removeEventListener('message', messageHandler);
+        clearInterval(pollInterval);
+        setIsLoading(false);
+        setError(event.data?.error || 'Google authentication was cancelled or failed.');
       }
     };
     window.addEventListener('message', messageHandler);
@@ -282,10 +260,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Primary Google Authentication Button */}
         <div className="space-y-3 pt-2">
-          {/* Official Google One-Tap / Identity Services Button Container */}
-          <div className="flex justify-center" ref={googleButtonContainerRef} />
-
-          {/* Fallback & Direct OAuth Continue Button */}
+          {/* Direct OAuth Continue Button */}
           <button
             type="button"
             onClick={handleDirectOAuthFlow}
@@ -324,6 +299,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <div className="pt-2 border-t border-slate-800/80 space-y-2">
           <div className="flex items-center justify-between text-[11px] text-slate-400">
             <span>First time? Your miner account is created automatically.</span>
+            {hasGoogleClientId !== null && (
+              <span
+                className={`px-1.5 py-0.5 rounded font-mono text-[9px] uppercase ${
+                  hasGoogleClientId
+                    ? 'bg-emerald-950/70 border border-emerald-800/60 text-emerald-300'
+                    : 'bg-amber-950/70 border border-amber-800/60 text-amber-300'
+                }`}
+              >
+                {hasGoogleClientId ? 'OAuth Ready' : 'Config Missing'}
+              </span>
+            )}
           </div>
 
           <div className="flex items-center justify-between text-[11px]">
@@ -374,12 +360,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
                 <span>Google Cloud OAuth 2.0 Credentials:</span>
               </div>
-              <p className="text-[10px] text-slate-400 leading-relaxed">
-                1. Android Package: <code className="text-cyan-300 font-mono">com.coinpulse.mining</code>
+              <p className="text-[10px] text-slate-400 leading-relaxed break-all">
+                1. Set <code className="text-cyan-300 font-mono">GOOGLE_CLIENT_ID</code> to your <strong>Web application</strong> OAuth Client ID (not the Android Client ID).
                 <br />
-                2. SHA-1 Fingerprint: Register your debug keystore SHA-1.
+                2. Add these exact <strong>Authorized redirect URIs</strong> to your Web Client in Google Cloud Console:
                 <br />
-                3. Web Client ID: Set <code className="text-cyan-300 font-mono">GOOGLE_CLIENT_ID</code> in .env.
+                <code className="text-cyan-300 font-mono">https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app/auth/callback</code>
+                <br />
+                <code className="text-cyan-300 font-mono">https://ais-pre-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app/auth/callback</code>
               </p>
             </div>
           )}

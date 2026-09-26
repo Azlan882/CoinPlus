@@ -8,7 +8,11 @@ import {
   requireAdmin,
   AuthenticatedRequest,
 } from './auth.ts';
-import { verifyGoogleIdToken } from './googleAuth.ts';
+import {
+   verifyGoogleIdToken,
+  getConfiguredGoogleClientId,
+  hasGoogleClientIdConfigured,
+} from './googleAuth.ts';
 import { processMineRequest } from './miningService.ts';
 import { User, ReferralRecord } from './types.ts';
 
@@ -35,14 +39,107 @@ function checkAuthRateLimit(ip: string): boolean {
 // -------------------------------------------------------------
 
 /**
- * Public Google Client ID discovery for client apps (web + Android Capacitor)
- * Ensures no secrets are transmitted.
+ * Resolves the canonical HTTPS backend callback URI for Google OAuth 2.0.
+ * Always maps Capacitor/localhost origins to the hosted APP_URL callback.
  */
-router.get('/auth/google/config', (_req: Request, res: Response): void => {
+function resolveGoogleRedirectUri(req: Request): string {
+  const baseAppUrl = (
+    process.env.APP_URL ||
+    'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app'
+  ).replace(/\/+$/, '');
+
+  const requested = typeof req.query.redirect_uri === 'string' ? req.query.redirect_uri.trim() : '';
+  if (requested) {
+    try {
+      const parsed = new URL(requested);
+      if (parsed.protocol === 'https:' && parsed.hostname.endsWith('.run.app')) {
+        return `${parsed.origin}/auth/callback`;
+      }
+    } catch {
+      // Fall back to baseAppUrl
+    }
+  }
+
+  const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  if (originHeader) {
+    try {
+      const parsedOrigin = new URL(originHeader);
+      if (parsedOrigin.protocol === 'https:' && parsedOrigin.hostname.endsWith('.run.app')) {
+        return `${parsedOrigin.origin}/auth/callback`;
+      }
+    } catch {
+      // Fall back to baseAppUrl
+    }
+  }
+
+  return `${baseAppUrl}/auth/callback`;
+}
+
+/**
+ * Safe Google Authentication configuration status for client apps (web + Android Capacitor).
+ * Reports whether GOOGLE_CLIENT_ID is configured at runtime without exposing the actual client ID.
+ */
+router.get('/auth/google/config', (req: Request, res: Response): void => {
+  const hasGoogleClientId = hasGoogleClientIdConfigured();
+  const redirectUri = resolveGoogleRedirectUri(req);
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.json({
     success: true,
-    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    configured: hasGoogleClientId,
+    hasGoogleClientId,
     appUrl: process.env.APP_URL || '',
+    redirectUri,
+  });
+});
+
+/**
+ * Server-side Google OAuth 2.0 / OpenID Connect authorization URL builder.
+ * Reads GOOGLE_CLIENT_ID dynamically from the server runtime environment so the client
+ * can open Google's authorization screen directly in a popup without exposing raw env vars.
+ */
+router.get('/auth/google/url', (req: Request, res: Response): void => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  const clientId = getConfiguredGoogleClientId();
+  if (!clientId) {
+    res.status(400).json({
+      success: false,
+      configured: false,
+      hasGoogleClientId: false,
+      error: 'Google authentication is not configured on the server (GOOGLE_CLIENT_ID is missing).',
+    });
+    return;
+  }
+
+  const baseAppUrl = (
+    process.env.APP_URL ||
+    'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app'
+  ).replace(/\/+$/, '');
+  const redirectUri = resolveGoogleRedirectUri(req);
+
+  const referralCode = typeof req.query.ref === 'string' ? req.query.ref.trim().toUpperCase() : '';
+  const origin = typeof req.query.origin === 'string' ? req.query.origin.trim() : baseAppUrl;
+  const nonce = crypto.randomBytes(12).toString('hex');
+  const state = JSON.stringify({
+    ref: referralCode,
+    origin,
+  });
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'id_token token',
+    scope: 'openid email profile',
+    nonce,
+    state,
+    prompt: 'select_account',
+  });
+
+  res.json({
+    success: true,
+    configured: true,
+    hasGoogleClientId: true,
+    redirectUri,
+    url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
   });
 });
 

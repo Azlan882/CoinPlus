@@ -6,6 +6,11 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    define: {
+      __COINPULSE_APP_URL__: JSON.stringify(
+        process.env.APP_URL || 'https://ais-pre-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app'
+      ),
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

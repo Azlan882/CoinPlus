@@ -13,6 +13,29 @@ export interface GoogleTokenPayload {
 }
 
 /**
+ * Safely retrieves and normalizes GOOGLE_CLIENT_ID from the server runtime environment
+ * without exposing its value in logs. Ignores placeholder values from .env.example.
+ */
+export function getConfiguredGoogleClientId(): string {
+  const raw = (process.env.GOOGLE_CLIENT_ID || '').trim().replace(/^["']|["']$/g, '');
+  if (
+    !raw ||
+    raw.includes('your-google-oauth-web-client-id') ||
+    raw === 'MY_GOOGLE_CLIENT_ID'
+  ) {
+    return '';
+  }
+  return raw;
+}
+
+/**
+ * Safe boolean diagnostic indicating whether GOOGLE_CLIENT_ID is present and valid.
+ */
+export function hasGoogleClientIdConfigured(): boolean {
+  return Boolean(getConfiguredGoogleClientId());
+}
+
+/**
  * Verify Google ID Token / Access Token directly with Google's tokeninfo endpoint.
  * This cryptographically validates the token against Google's public keys.
  */
@@ -46,9 +69,9 @@ export async function verifyGoogleIdToken(token: string): Promise<GoogleTokenPay
             }
 
             // Optional: verify audience if GOOGLE_CLIENT_ID is configured
-            const configuredClientId = process.env.GOOGLE_CLIENT_ID;
+            const configuredClientId = getConfiguredGoogleClientId();
             if (configuredClientId && data.aud && data.aud !== configuredClientId) {
-              console.warn(`[GoogleAuth] Audience warning: token aud=${data.aud} vs configured=${configuredClientId}`);
+              console.warn('[GoogleAuth] Audience warning: token aud claim did not match configured GOOGLE_CLIENT_ID');
             }
 
             resolve({
