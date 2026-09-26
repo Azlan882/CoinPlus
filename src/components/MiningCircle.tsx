@@ -13,6 +13,10 @@ interface MiningCircleProps {
   isMiningLoading: boolean;
   onMineClick: () => void;
   serverSyncTime: number;
+  nextMiningAvailableAt?: number;
+  cycleStartTime?: number | null;
+  serverClockOffsetMs?: number;
+  resumeSyncTick?: number;
 }
 
 export const MiningCircle: React.FC<MiningCircleProps> = ({
@@ -23,14 +27,50 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
   remainingSeconds,
   isMiningLoading,
   onMineClick,
+  nextMiningAvailableAt = 0,
+  cycleStartTime = null,
+  serverClockOffsetMs = 0,
+  resumeSyncTick = 0,
 }) => {
-  // Real-time interpolated earnings during the active 1-hour cycle
+  // Real-time interpolated earnings & cycle progress derived directly from authoritative server timestamps
   const [accumulatedEarned, setAccumulatedEarned] = useState<number>(0);
+  const [liveProgressRatio, setLiveProgressRatio] = useState<number>(0);
 
   // Total cycle duration is 3600 seconds (1 hour)
   const totalCycleSeconds = 3600;
-  const elapsedSeconds = Math.max(0, Math.min(totalCycleSeconds, totalCycleSeconds - remainingSeconds));
-  const progressRatio = status === 'mining' ? elapsedSeconds / totalCycleSeconds : status === 'available' ? 1 : 0;
+  const totalCycleMs = totalCycleSeconds * 1000;
+
+  // Compute exact progress ratio from authoritative server timestamps (currentTime - cycleStartTime)
+  const computeCycleMetrics = () => {
+    if (status === 'available') {
+      return { ratio: 1, earned: Number(currentMiningRate.toFixed(4)) };
+    }
+    if (status !== 'mining') {
+      return { ratio: 0, earned: 0 };
+    }
+
+    const nowServerMs = Date.now() + serverClockOffsetMs;
+    if (nextMiningAvailableAt > 0) {
+      const effectiveStartMs =
+        cycleStartTime && nextMiningAvailableAt > cycleStartTime
+          ? cycleStartTime
+          : nextMiningAvailableAt - totalCycleMs;
+      const durationMs = Math.max(1000, nextMiningAvailableAt - effectiveStartMs);
+      const elapsedMs = Math.max(0, Math.min(durationMs, nowServerMs - effectiveStartMs));
+      const ratio = Math.min(1, Math.max(0, elapsedMs / durationMs));
+      const earned = Number((ratio * currentMiningRate).toFixed(6));
+      return { ratio, earned };
+    }
+
+    const elapsedSeconds = Math.max(0, Math.min(totalCycleSeconds, totalCycleSeconds - remainingSeconds));
+    const ratio = elapsedSeconds / totalCycleSeconds;
+    const earned = Number((ratio * currentMiningRate).toFixed(6));
+    return { ratio, earned };
+  };
+
+  const fallbackElapsedSeconds = Math.max(0, Math.min(totalCycleSeconds, totalCycleSeconds - remainingSeconds));
+  const fallbackRatio = status === 'mining' ? fallbackElapsedSeconds / totalCycleSeconds : status === 'available' ? 1 : 0;
+  const progressRatio = status === 'mining' ? liveProgressRatio || fallbackRatio : fallbackRatio;
   const progressPercent = Math.min(100, Math.max(0, progressRatio * 100));
 
   // Circumference for 260px diameter (r = 115)
@@ -38,26 +78,35 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (circumference * progressPercent) / 100;
 
-  // Real-time micro-counter for earned coins in current cycle
+  // Timestamp-driven synchronization for progress arc & earned counter (never accumulates via prev + delta)
   useEffect(() => {
+    const syncFromTimestamps = () => {
+      const { ratio, earned } = computeCycleMetrics();
+      setLiveProgressRatio(ratio);
+      setAccumulatedEarned(earned);
+    };
+
+    syncFromTimestamps();
+
     if (status === 'mining') {
-      const earnedSoFar = (elapsedSeconds / 3600) * currentMiningRate;
-      setAccumulatedEarned(Number(earnedSoFar.toFixed(6)));
+      const interval = window.setInterval(() => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          return;
+        }
+        syncFromTimestamps();
+      }, 250);
 
-      const interval = setInterval(() => {
-        setAccumulatedEarned((prev) => {
-          const next = prev + (currentMiningRate / 3600) * 0.2;
-          return Number(Math.min(currentMiningRate, next).toFixed(6));
-        });
-      }, 200);
-
-      return () => clearInterval(interval);
-    } else if (status === 'available') {
-      setAccumulatedEarned(Number(currentMiningRate.toFixed(4)));
-    } else {
-      setAccumulatedEarned(0);
+      return () => window.clearInterval(interval);
     }
-  }, [status, elapsedSeconds, currentMiningRate]);
+  }, [
+    status,
+    remainingSeconds,
+    currentMiningRate,
+    nextMiningAvailableAt,
+    cycleStartTime,
+    serverClockOffsetMs,
+    resumeSyncTick,
+  ]);
 
   // Format countdown HH:MM:SS
   const formattedCountdown = useMemo(() => {

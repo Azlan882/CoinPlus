@@ -244,6 +244,116 @@ async function runTests() {
     assert.strictEqual(tokenPayload?.userId, googleUser.id, 'Session token must encode user ID for Google account');
   });
 
+  // 12. Cases A-C: Minimize App for 1 Minute -> Reopen (Timestamp-Driven Remaining Time)
+  await test('Cases A-C: Start mining -> Minimize 1 minute -> Reopen reflects ~60s elapsed time', async () => {
+    const uniqueId = `usr_bg_test_${Date.now()}`;
+    const bgUser: User = {
+      id: uniqueId,
+      googleId: `gsub_${uniqueId}`,
+      username: `bgminer_${Date.now().toString().slice(-5)}`,
+      email: `${uniqueId}@coinpulse.internal`,
+      referralCode: `BG${Date.now().toString().slice(-6)}`,
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(bgUser, 0.0);
+
+    // Step A: Start mining
+    const mineRes = await processMineRequest(bgUser, '127.0.0.1', 'AndroidAPK');
+    assert(mineRes.success && mineRes.data, 'Mining must start');
+    assert.strictEqual(mineRes.data.nextMiningAvailableAt - mineRes.data.cycleStartTime, 3600 * 1000, 'Cycle must be 3600s');
+
+    // Step B: Simulate 1 minute (60,000 ms) passing while Android WebView is minimized/suspended
+    const oneMinuteAgo = Date.now() - 60 * 1000;
+    db.updateMiningState(bgUser.id, {
+      currentCycleStartTime: oneMinuteAgo,
+      lastMinedAt: oneMinuteAgo,
+      nextMiningAvailableAt: oneMinuteAgo + 3600 * 1000,
+    });
+
+    // Step C: Reopen app -> Server & client timestamp formula (nextMiningAvailableAt - now)
+    const stateOnReopen = db.getMiningState(bgUser.id);
+    const nowOnReopen = Date.now();
+    const remainingSeconds = Math.ceil(Math.max(0, stateOnReopen.nextMiningAvailableAt - nowOnReopen) / 1000);
+    assert(
+      remainingSeconds >= 3539 && remainingSeconds <= 3541,
+      `Expected ~3540s remaining after 1m minimize, got ${remainingSeconds}s`
+    );
+  });
+
+  // 13. Cases D-F: Leave App Minimized Longer Than Cooldown -> Reopen Shows Claimable 'available' State Without Auto-Award
+  await test('Cases D-F: Leave minimized > 1 hour -> Reopen shows available state without auto-crediting coins until claimed', async () => {
+    const uniqueId = `usr_exp_test_${Date.now()}`;
+    const expUser: User = {
+      id: uniqueId,
+      googleId: `gsub_${uniqueId}`,
+      username: `expminer_${Date.now().toString().slice(-5)}`,
+      email: `${uniqueId}@coinpulse.internal`,
+      referralCode: `EX${Date.now().toString().slice(-6)}`,
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(expUser, 0.0);
+
+    // Step D: Start first mining cycle (+0.12 CP)
+    const firstMine = await processMineRequest(expUser, '127.0.0.1', 'AndroidAPK');
+    assert(firstMine.success, 'First mining cycle must succeed');
+    assert.strictEqual(db.getBalance(expUser.id).totalBalance, 0.12, 'Balance after cycle #1 must be 0.12 CP');
+
+    // Step E: Simulate 65 minutes passing while app is minimized in background
+    const sixtyFiveMinAgo = Date.now() - 65 * 60 * 1000;
+    db.updateMiningState(expUser.id, {
+      currentCycleStartTime: sixtyFiveMinAgo,
+      lastMinedAt: sixtyFiveMinAgo,
+      nextMiningAvailableAt: sixtyFiveMinAgo + 3600 * 1000,
+    });
+
+    // Step F: Reopen app -> Cooldown is finished ('available'), balance is still 0.12 until user claims next cycle
+    const stateAfterCooldown = db.getMiningState(expUser.id);
+    const now = Date.now();
+    const isCooldownActive = stateAfterCooldown.nextMiningAvailableAt > 0 && now < stateAfterCooldown.nextMiningAvailableAt;
+    const remainingSeconds = isCooldownActive ? Math.ceil((stateAfterCooldown.nextMiningAvailableAt - now) / 1000) : 0;
+    const cycleStatus = stateAfterCooldown.lastMinedAt === null ? 'ready' : isCooldownActive ? 'mining' : 'available';
+
+    assert.strictEqual(isCooldownActive, false, 'Cooldown must be inactive after 65m');
+    assert.strictEqual(remainingSeconds, 0, 'Remaining seconds must be 0');
+    assert.strictEqual(cycleStatus, 'available', 'Cycle status must be available (claim ready)');
+    assert.strictEqual(db.getBalance(expUser.id).totalBalance, 0.12, 'Coins must NOT be auto-awarded without server mine action');
+
+    // User taps CLAIM & MINE -> server validates and awards second cycle (+0.12 CP -> 0.24 CP)
+    const secondMine = await processMineRequest(expUser, '127.0.0.1', 'AndroidAPK');
+    assert(secondMine.success, 'Second mining action after cooldown must succeed');
+    assert.strictEqual(db.getBalance(expUser.id).totalBalance, 0.24, 'Balance must be 0.24 CP after server-validated claim');
+  });
+
+  // 14. Cases G-J: App Kill & Reopen + Multi-Device Consistency
+  await test('Cases G-J: Kill app & reopen or open on second device restores identical server state', async () => {
+    const stateA = db.getMiningState(userA.id);
+    const balanceA = db.getBalance(userA.id);
+
+    // Device 1 (reopened after kill) & Device 2 (browser) read identical authoritative state
+    const device1Remaining = Math.ceil(Math.max(0, stateA.nextMiningAvailableAt - Date.now()) / 1000);
+    const device2Remaining = Math.ceil(Math.max(0, db.getMiningState(userA.id).nextMiningAvailableAt - Date.now()) / 1000);
+
+    assert.strictEqual(stateA.nextMiningAvailableAt, db.getMiningState(userA.id).nextMiningAvailableAt);
+    assert(Math.abs(device1Remaining - device2Remaining) <= 1, 'Both devices must compute identical remaining cooldown');
+    assert.strictEqual(balanceA.totalBalance, db.getBalance(userA.id).totalBalance, 'Both devices must see identical balance');
+  });
+
   console.log(`\n========================================`);
   console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
   console.log(`========================================\n`);

@@ -28,6 +28,33 @@ public class MainActivity extends BridgeActivity {
         handleDeepLinkIntent(intent);
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (this.bridge == null || this.bridge.getWebView() == null) {
+            return;
+        }
+        final WebView webView = this.bridge.getWebView();
+        try {
+            webView.onResume();
+            webView.resumeTimers();
+        } catch (Exception ignored) {
+        }
+        int[] delays = new int[] { 0, 150, 600 };
+        for (int delay : delays) {
+            webView.postDelayed(() -> {
+                try {
+                    String js = "(function(){" +
+                        "window.dispatchEvent(new CustomEvent('coinpulse-app-resume', { detail: { timestamp: Date.now() } }));" +
+                        "document.dispatchEvent(new Event('resume'));" +
+                        "})();";
+                    webView.evaluateJavascript(js, null);
+                } catch (Exception ignored) {
+                }
+            }, delay);
+        }
+    }
+
     private void registerNativeBridge() {
         if (this.bridge == null || this.bridge.getWebView() == null) {
             return;

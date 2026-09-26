@@ -95,6 +95,7 @@ class ApiService {
 
     try {
       let response = await fetch(url, {
+        cache: 'no-store',
         ...options,
         headers,
       });
@@ -108,6 +109,7 @@ class ApiService {
         const altBase = getFallbackBackendUrl(baseUrl);
         try {
           const altRes = await fetch(`${altBase}${endpoint}`, {
+            cache: 'no-store',
             ...options,
             headers,
           });
@@ -270,6 +272,7 @@ class ApiService {
       sessionNumber: number;
       referralActivated: boolean;
       message: string;
+      miningState?: MiningStatusResponse;
       serverTime: number;
     }>('/api/mine', {
       method: 'POST',

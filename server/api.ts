@@ -18,6 +18,53 @@ import { User, ReferralRecord } from './types.ts';
 
 const router = Router();
 
+// Prevent HTTP caching on all API endpoints so WebView / mobile resume always fetches authoritative server state
+router.use((_req: Request, res: Response, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+function buildAuthoritativeMiningStatus(user: User) {
+  const freshUser = db.getUserById(user.id) || user;
+  const miningState = db.getMiningState(freshUser.id);
+  const now = Date.now();
+
+  const isCooldownActive = miningState.nextMiningAvailableAt > 0 && now < miningState.nextMiningAvailableAt;
+  const remainingMs = isCooldownActive ? Math.max(0, miningState.nextMiningAvailableAt - now) : 0;
+  const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+  let cycleStatus: 'ready' | 'mining' | 'available' = 'ready';
+  if (miningState.lastMinedAt === null) {
+    cycleStatus = 'ready';
+  } else if (isCooldownActive) {
+    cycleStatus = 'mining';
+  } else {
+    cycleStatus = 'available';
+  }
+
+  const referrals = db.getReferralsByInviter(freshUser.id);
+  const activeReferralsCount = referrals.filter((r) => r.status === 'activated').length;
+
+  return {
+    userId: freshUser.id,
+    isMiningActive: isCooldownActive,
+    status: cycleStatus,
+    isCooldownActive,
+    remainingSeconds,
+    nextMiningAvailableAt: miningState.nextMiningAvailableAt,
+    currentCycleStartTime: miningState.currentCycleStartTime,
+    lastMinedAt: miningState.lastMinedAt,
+    totalCyclesCompleted: miningState.totalCyclesCompleted,
+    baseMiningRate: freshUser.baseMiningRate,
+    bonusMiningRate: freshUser.bonusMiningRate,
+    totalMiningRate: freshUser.totalMiningRate,
+    activeReferralsCount,
+    serverTime: now,
+  };
+}
+
 // In-memory IP rate limiter for auth endpoints
 const authRateLimiter = new Map<string, { count: number; resetAt: number }>();
 function checkAuthRateLimit(ip: string): boolean {
@@ -437,7 +484,7 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
 
     const token = generateToken(user);
     const balance = db.getBalance(user.id);
-    const miningState = db.getMiningState(user.id);
+    const miningState = buildAuthoritativeMiningStatus(user);
 
     const responsePayload = {
       success: true,
@@ -446,7 +493,7 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
       balance,
       miningState,
       isNewUser,
-      serverTime: Date.now(),
+      serverTime: miningState.serverTime,
       message: isNewUser
         ? 'Account successfully created with Google! Welcome to CoinPulse.'
         : 'Welcome back! Signed in with Google.',
@@ -487,7 +534,7 @@ router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response): 
   const user = req.user!;
   const freshUser = db.getUserById(user.id) || user;
   const balance = db.getBalance(user.id);
-  const miningState = db.getMiningState(user.id);
+  const miningState = buildAuthoritativeMiningStatus(freshUser);
   const referrals = db.getReferralsByInviter(user.id);
   const rateHistory = db.getRateHistory(user.id);
 
@@ -502,7 +549,7 @@ router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response): 
       pendingReferrals: referrals.filter((r) => r.status === 'pending').length,
     },
     rateHistory,
-    serverTime: Date.now(),
+    serverTime: miningState.serverTime,
   });
 });
 
@@ -518,60 +565,33 @@ router.post('/mine', requireAuth, async (req: AuthenticatedRequest, res: Respons
   const result = await processMineRequest(user, clientIp, userAgent);
 
   if (!result.success) {
+    const miningState = buildAuthoritativeMiningStatus(user);
     res.status(result.status).json({
       success: false,
       error: result.error,
       remainingSeconds: result.remainingSeconds,
+      miningState,
+      serverTime: miningState.serverTime,
     });
     return;
   }
 
+  const miningState = buildAuthoritativeMiningStatus(user);
   res.status(200).json({
     success: true,
     ...result.data,
-    serverTime: Date.now(),
+    miningState,
+    serverTime: miningState.serverTime,
   });
 });
 
 router.get('/mining/status', requireAuth, (req: AuthenticatedRequest, res: Response): void => {
   const user = db.getUserById(req.user!.id) || req.user!;
-  const miningState = db.getMiningState(user.id);
-  const now = Date.now();
-
-  const isCooldownActive = miningState.nextMiningAvailableAt > 0 && now < miningState.nextMiningAvailableAt;
-  const remainingMs = isCooldownActive ? Math.max(0, miningState.nextMiningAvailableAt - now) : 0;
-  const remainingSeconds = Math.ceil(remainingMs / 1000);
-
-  // Status computation:
-  // - "ready": No active mining session, user can mine immediately
-  // - "mining": Cooldown is active, 1-hour cycle is underway
-  // - "available": Cycle has finished, user can trigger the next mining reward
-  let cycleStatus: 'ready' | 'mining' | 'available' = 'ready';
-  if (miningState.lastMinedAt === null) {
-    cycleStatus = 'ready';
-  } else if (isCooldownActive) {
-    cycleStatus = 'mining';
-  } else {
-    cycleStatus = 'available';
-  }
-
-  const referrals = db.getReferralsByInviter(user.id);
-  const activeReferralsCount = referrals.filter((r) => r.status === 'activated').length;
+  const miningState = buildAuthoritativeMiningStatus(user);
 
   res.json({
     success: true,
-    status: cycleStatus,
-    isCooldownActive,
-    remainingSeconds,
-    nextMiningAvailableAt: miningState.nextMiningAvailableAt,
-    currentCycleStartTime: miningState.currentCycleStartTime,
-    lastMinedAt: miningState.lastMinedAt,
-    totalCyclesCompleted: miningState.totalCyclesCompleted,
-    baseMiningRate: user.baseMiningRate,
-    bonusMiningRate: user.bonusMiningRate,
-    totalMiningRate: user.totalMiningRate,
-    activeReferralsCount,
-    serverTime: now,
+    ...miningState,
   });
 });
 
