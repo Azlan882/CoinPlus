@@ -12,20 +12,20 @@ export interface GoogleTokenPayload {
   iss?: string;
 }
 
+const WEB_GOOGLE_CLIENT_ID =
+  '705048511305-64rki2ql9ishnriq7g1o4sbdbsdclgi7.apps.googleusercontent.com';
+
 /**
- * Safely retrieves and normalizes GOOGLE_CLIENT_ID from the server runtime environment
- * without exposing its value in logs. Ignores placeholder values from .env.example.
+ * Safely retrieves the Web application OAuth Client ID for OAuth 2.0 redirect/popup flows.
+ * Ensures the Web Client ID is used even if GOOGLE_CLIENT_ID in the environment was set to the Android Client ID.
  */
 export function getConfiguredGoogleClientId(): string {
-  const raw = (process.env.GOOGLE_CLIENT_ID || '').trim().replace(/^["']|["']$/g, '');
-  if (
-    !raw ||
-    raw.includes('your-google-oauth-web-client-id') ||
-    raw === 'MY_GOOGLE_CLIENT_ID'
-  ) {
-    return '';
+  const webEnv = (process.env.GOOGLE_WEB_CLIENT_ID || '').trim().replace(/^["']|["']$/g, '');
+  if (webEnv && webEnv.endsWith('.apps.googleusercontent.com')) {
+    return webEnv;
   }
-  return raw;
+
+  return WEB_GOOGLE_CLIENT_ID;
 }
 
 /**
@@ -68,9 +68,14 @@ export async function verifyGoogleIdToken(token: string): Promise<GoogleTokenPay
               return reject(new Error('Google token did not contain valid subject or email claims'));
             }
 
-            // Optional: verify audience if GOOGLE_CLIENT_ID is configured
-            const configuredClientId = getConfiguredGoogleClientId();
-            if (configuredClientId && data.aud && data.aud !== configuredClientId) {
+            // Optional: verify audience against configured Web or Android Client IDs
+            const webClientId = getConfiguredGoogleClientId();
+            const envClientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+            if (
+              data.aud &&
+              data.aud !== webClientId &&
+              (!envClientId || data.aud !== envClientId)
+            ) {
               console.warn('[GoogleAuth] Audience warning: token aud claim did not match configured GOOGLE_CLIENT_ID');
             }
 
