@@ -75,6 +75,24 @@ function resolveGoogleRedirectUri(req: Request): string {
   return `${baseAppUrl}/auth/callback`;
 }
 
+// In-memory store for OAuth popup/redirect handoff (works across COOP-severed popups, iframes, and Capacitor WebViews)
+interface PendingGoogleAuthSession {
+  status: 'pending' | 'authenticated' | 'error';
+  data?: any;
+  error?: string;
+  createdAt: number;
+}
+const pendingGoogleAuthSessions = new Map<string, PendingGoogleAuthSession>();
+
+function prunePendingAuthSessions(): void {
+  const cutoff = Date.now() - 10 * 60_000;
+  for (const [sid, entry] of pendingGoogleAuthSessions.entries()) {
+    if (entry.createdAt < cutoff) {
+      pendingGoogleAuthSessions.delete(sid);
+    }
+  }
+}
+
 /**
  * Safe Google Authentication configuration status for client apps (web + Android Capacitor).
  * Reports whether GOOGLE_CLIENT_ID is configured at runtime without exposing the actual client ID.
@@ -92,24 +110,13 @@ router.get('/auth/google/config', (req: Request, res: Response): void => {
   });
 });
 
-/**
- * Server-side Google OAuth 2.0 / OpenID Connect authorization URL builder.
- * Reads GOOGLE_CLIENT_ID dynamically from the server runtime environment so the client
- * can open Google's authorization screen directly in a popup without exposing raw env vars.
- */
-router.get('/auth/google/url', (req: Request, res: Response): void => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+function buildGoogleOAuthUrlForRequest(req: Request): {
+  clientId: string;
+  redirectUri: string;
+  authSessionId: string;
+  url: string;
+} {
   const clientId = getConfiguredGoogleClientId();
-  if (!clientId) {
-    res.status(400).json({
-      success: false,
-      configured: false,
-      hasGoogleClientId: false,
-      error: 'Google authentication is not configured on the server (GOOGLE_CLIENT_ID is missing).',
-    });
-    return;
-  }
-
   const baseAppUrl = (
     process.env.APP_URL ||
     'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app'
@@ -118,10 +125,28 @@ router.get('/auth/google/url', (req: Request, res: Response): void => {
 
   const referralCode = typeof req.query.ref === 'string' ? req.query.ref.trim().toUpperCase() : '';
   const origin = typeof req.query.origin === 'string' ? req.query.origin.trim() : baseAppUrl;
+  const platform = typeof req.query.platform === 'string' ? req.query.platform.trim() : 'web';
+  const mode = typeof req.query.mode === 'string' ? req.query.mode.trim() : 'popup';
+  const authSessionId =
+    typeof req.query.sid === 'string' && req.query.sid.trim()
+      ? req.query.sid.trim()
+      : `gsess_${crypto.randomBytes(12).toString('hex')}`;
+
+  prunePendingAuthSessions();
+  if (!pendingGoogleAuthSessions.has(authSessionId)) {
+    pendingGoogleAuthSessions.set(authSessionId, {
+      status: 'pending',
+      createdAt: Date.now(),
+    });
+  }
+
   const nonce = crypto.randomBytes(12).toString('hex');
   const state = JSON.stringify({
+    sid: authSessionId,
     ref: referralCode,
     origin,
+    platform,
+    mode,
   });
 
   const params = new URLSearchParams({
@@ -134,13 +159,95 @@ router.get('/auth/google/url', (req: Request, res: Response): void => {
     prompt: 'select_account',
   });
 
+  return {
+    clientId,
+    redirectUri,
+    authSessionId,
+    url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+  };
+}
+
+/**
+ * Server-side Google OAuth 2.0 / OpenID Connect authorization URL builder.
+ * Reads GOOGLE_CLIENT_ID dynamically from the server runtime environment so the client
+ * can open Google's authorization screen directly in a popup without exposing raw env vars.
+ */
+router.get('/auth/google/url', (req: Request, res: Response): void => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  const built = buildGoogleOAuthUrlForRequest(req);
+  if (!built.clientId) {
+    res.status(400).json({
+      success: false,
+      configured: false,
+      hasGoogleClientId: false,
+      error: 'Google authentication is not configured on the server (GOOGLE_CLIENT_ID is missing).',
+    });
+    return;
+  }
+
   res.json({
     success: true,
     configured: true,
     hasGoogleClientId: true,
-    redirectUri,
-    url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+    redirectUri: built.redirectUri,
+    authSessionId: built.authSessionId,
+    url: built.url,
   });
+});
+
+/**
+ * Direct HTTP 302 redirect to Google OAuth 2.0 authorization screen.
+ * Ensures popups or mobile webviews never open about:blank even if pre-fetching has not completed.
+ */
+router.get('/auth/google/start', (req: Request, res: Response): void => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  const built = buildGoogleOAuthUrlForRequest(req);
+  if (!built.clientId) {
+    res.status(400).send('Google authentication is not configured on the server.');
+    return;
+  }
+  res.redirect(302, built.url);
+});
+
+/**
+ * Pollable OAuth session handoff status endpoint.
+ * Allows the CoinPulse frontend (in AI Studio iframe, browser, or Android Capacitor WebView)
+ * to receive the completed CoinPulse session even when window.opener is severed by Google COOP headers.
+ */
+router.get('/auth/google/session/:sid', (req: Request, res: Response): void => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  prunePendingAuthSessions();
+  const sid = (req.params.sid || '').trim();
+  const entry = pendingGoogleAuthSessions.get(sid);
+  if (!entry) {
+    res.json({
+      success: true,
+      status: 'pending',
+    });
+    return;
+  }
+
+  res.json({
+    success: true,
+    status: entry.status,
+    session: entry.data || null,
+    error: entry.error || null,
+  });
+});
+
+/**
+ * Records user cancellation or OAuth callback errors so the opener/polling client can display a clean message.
+ */
+router.post('/auth/google/cancel', (req: Request, res: Response): void => {
+  const { authSessionId, error } = req.body || {};
+  if (authSessionId && typeof authSessionId === 'string') {
+    pendingGoogleAuthSessions.set(authSessionId.trim(), {
+      status: 'error',
+      error: typeof error === 'string' && error.trim() ? error.trim() : 'Google sign-in was cancelled.',
+      createdAt: Date.now(),
+    });
+  }
+  res.json({ success: true });
 });
 
 /**
@@ -173,9 +280,16 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
     return;
   }
 
-  const { token: googleToken, referralCode } = req.body || {};
+  const { token: googleToken, referralCode, authSessionId } = req.body || {};
 
   if (!googleToken || typeof googleToken !== 'string') {
+    if (authSessionId && typeof authSessionId === 'string') {
+      pendingGoogleAuthSessions.set(authSessionId.trim(), {
+        status: 'error',
+        error: 'Google authentication credential is required.',
+        createdAt: Date.now(),
+      });
+    }
     res.status(400).json({
       success: false,
       error: 'Google authentication credential is required.',
@@ -308,7 +422,7 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
     const balance = db.getBalance(user.id);
     const miningState = db.getMiningState(user.id);
 
-    res.json({
+    const responsePayload = {
       success: true,
       token,
       user: sanitizeUser(user),
@@ -319,10 +433,32 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
       message: isNewUser
         ? 'Account successfully created with Google! Welcome to CoinPulse.'
         : 'Welcome back! Signed in with Google.',
-    });
+    };
+
+    if (authSessionId && typeof authSessionId === 'string' && authSessionId.trim()) {
+      pendingGoogleAuthSessions.set(authSessionId.trim(), {
+        status: 'authenticated',
+        data: responsePayload,
+        createdAt: Date.now(),
+      });
+    }
+
+    res.setHeader(
+      'Set-Cookie',
+      `coinpulse_session_token=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=None; Secure`
+    );
+
+    res.json(responsePayload);
   } catch (err: any) {
     console.error('[GoogleAuth] Verification failed:', err.message);
     db.logSecurityEvent('invalid_credentials', clientIp, 'low', undefined, { error: err.message }, req.headers['user-agent']);
+    if (authSessionId && typeof authSessionId === 'string' && authSessionId.trim()) {
+      pendingGoogleAuthSessions.set(authSessionId.trim(), {
+        status: 'error',
+        error: `Google verification failed: ${err.message || 'Invalid Google credential'}`,
+        createdAt: Date.now(),
+      });
+    }
     res.status(401).json({
       success: false,
       error: `Google verification failed: ${err.message || 'Invalid Google credential'}`,

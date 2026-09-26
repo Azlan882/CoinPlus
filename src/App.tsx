@@ -112,7 +112,13 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Initial auth restore or pending OAuth redirect token
+    // Initial auth restore or pending OAuth redirect / deep-link token
+    const tokenParam = urlParams.get('token') || urlParams.get('auth_token');
+    if (tokenParam) {
+      api.setToken(tokenParam);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
     const pendingGoogleToken = sessionStorage.getItem('pending_google_token');
     if (pendingGoogleToken) {
       sessionStorage.removeItem('pending_google_token');
@@ -136,6 +142,7 @@ export default function App() {
           setIsAuthOpen(true);
         });
     } else if (api.getToken()) {
+      setIsAuthOpen(false);
       syncServerData();
     } else {
       // Auto open Google auth on first visit so user can sign in

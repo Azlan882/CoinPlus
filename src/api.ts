@@ -13,16 +13,19 @@ const TOKEN_KEY = 'coinpulse_session_token';
 
 declare const __COINPULSE_APP_URL__: string | undefined;
 
-function getApiBaseUrl(): string {
-  if (typeof window === 'undefined') return '';
+export function isNativeCapacitorOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
   const { protocol, hostname, port } = window.location;
-  // In Capacitor Android WebView, origin is https://localhost or capacitor://localhost with no port
-  const isCapacitorLocalOrigin =
+  return (
     protocol === 'capacitor:' ||
     protocol === 'file:' ||
-    ((hostname === 'localhost' || hostname === '127.0.0.1') && !port);
+    ((hostname === 'localhost' || hostname === '127.0.0.1') && !port)
+  );
+}
 
-  if (isCapacitorLocalOrigin) {
+export function getApiBaseUrl(): string {
+  if (typeof window === 'undefined') return '';
+  if (isNativeCapacitorOrigin()) {
     const configuredUrl =
       typeof __COINPULSE_APP_URL__ !== 'undefined' && __COINPULSE_APP_URL__
         ? __COINPULSE_APP_URL__
@@ -102,19 +105,68 @@ class ApiService {
     });
   }
 
-  async getGoogleAuthUrl(params?: { redirectUri?: string; referralCode?: string; origin?: string }) {
+  async getGoogleAuthUrl(params?: {
+    sid?: string;
+    redirectUri?: string;
+    referralCode?: string;
+    origin?: string;
+    platform?: string;
+    mode?: string;
+  }) {
     const search = new URLSearchParams();
+    if (params?.sid) search.set('sid', params.sid);
     if (params?.redirectUri) search.set('redirect_uri', params.redirectUri);
     if (params?.referralCode) search.set('ref', params.referralCode);
     if (params?.origin) search.set('origin', params.origin);
+    if (params?.platform) search.set('platform', params.platform);
+    if (params?.mode) search.set('mode', params.mode);
     const qs = search.toString();
     return this.request<{
       success: boolean;
       configured: boolean;
       hasGoogleClientId: boolean;
       redirectUri: string;
+      authSessionId: string;
       url: string;
     }>(`/api/auth/google/url${qs ? `?${qs}` : ''}`, {
+      cache: 'no-store',
+    });
+  }
+
+  getGoogleDirectStartUrl(params: {
+    sid: string;
+    redirectUri?: string;
+    referralCode?: string;
+    origin?: string;
+    platform?: string;
+    mode?: string;
+  }): string {
+    const search = new URLSearchParams();
+    search.set('sid', params.sid);
+    if (params.redirectUri) search.set('redirect_uri', params.redirectUri);
+    if (params.referralCode) search.set('ref', params.referralCode);
+    if (params.origin) search.set('origin', params.origin);
+    if (params.platform) search.set('platform', params.platform);
+    if (params.mode) search.set('mode', params.mode);
+    return `${getApiBaseUrl()}/api/auth/google/start?${search.toString()}`;
+  }
+
+  async getGoogleAuthSession(sid: string) {
+    return this.request<{
+      success: boolean;
+      status: 'pending' | 'authenticated' | 'error';
+      session?: {
+        success: boolean;
+        token: string;
+        user: User;
+        balance: any;
+        miningState: any;
+        isNewUser: boolean;
+        serverTime: number;
+        message: string;
+      } | null;
+      error?: string | null;
+    }>(`/api/auth/google/session/${encodeURIComponent(sid)}`, {
       cache: 'no-store',
     });
   }

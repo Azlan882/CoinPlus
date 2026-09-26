@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Shield, Sparkles, AlertCircle, CheckCircle2, HelpCircle } from 'lucide-react';
-import { api } from '../api.ts';
+import { api, isNativeCapacitorOrigin } from '../api.ts';
 import { User, BalanceState, MiningStatusResponse } from '../types.ts';
 
 declare global {
@@ -8,6 +8,11 @@ declare global {
     google?: any;
     handleGoogleCredentialResponse?: (response: any) => void;
   }
+}
+
+function generateClientAuthSessionId(): string {
+  const rand = Math.random().toString(36).substring(2, 12);
+  return `gsess_${Date.now().toString(36)}_${rand}`;
 }
 
 interface AuthModalProps {
@@ -28,10 +33,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [hasGoogleClientId, setHasGoogleClientId] = useState<boolean | null>(null);
+  const [authSessionId, setAuthSessionId] = useState<string>(() => generateClientAuthSessionId());
   const [prefetchedAuthUrl, setPrefetchedAuthUrl] = useState<string>('');
   const [showConfigHelp, setShowConfigHelp] = useState(false);
   const [manualToken, setManualToken] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
+
+  const completedRef = useRef(false);
 
   // Sync initial referral code from URL or invites
   useEffect(() => {
@@ -44,6 +52,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     let isMounted = true;
+    completedRef.current = false;
 
     const loadConfigAndUrl = async () => {
       try {
@@ -53,10 +62,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setHasGoogleClientId(isConfigured);
 
         if (isConfigured) {
+          const platform = isNativeCapacitorOrigin() ? 'capacitor' : 'web';
           const urlRes = await api.getGoogleAuthUrl({
+            sid: authSessionId,
             redirectUri: `${window.location.origin}/auth/callback`,
             referralCode: referralCode.trim() || undefined,
             origin: window.location.origin,
+            platform,
+            mode: 'popup',
           });
           if (isMounted && urlRes.url) {
             setPrefetchedAuthUrl(urlRes.url);
@@ -72,9 +85,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, referralCode]);
+  }, [isOpen, referralCode, authSessionId]);
 
   if (!isOpen) return null;
+
+  const completeWithVerifiedSession = (sessionData: {
+    token: string;
+    user: User;
+    balance: any;
+    miningState: MiningStatusResponse;
+  }) => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    api.setToken(sessionData.token);
+    const normalizedBalance: BalanceState = {
+      balance:
+        typeof sessionData.balance?.totalBalance === 'number'
+          ? sessionData.balance.totalBalance
+          : sessionData.balance?.balance ?? 0,
+      totalMined: sessionData.balance?.totalMined ?? 0,
+      totalReferralBonus: sessionData.balance?.totalReferralBonus ?? 0,
+      lastCalculatedAt: sessionData.balance?.lastCalculatedAt ?? new Date().toISOString(),
+      integrityVerified: true,
+    };
+    setIsLoading(false);
+    onSuccess(sessionData.user, normalizedBalance, sessionData.miningState);
+    onClose();
+  };
 
   const handleGoogleTokenSubmit = async (tokenString: string) => {
     if (!tokenString || !tokenString.trim()) {
@@ -88,8 +125,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     try {
       const res = await api.loginWithGoogle(tokenString.trim(), referralCode.trim() || undefined);
-      onSuccess(res.user, res.balance, res.miningState);
-      onClose();
+      completeWithVerifiedSession(res);
     } catch (err: any) {
       setError(err.message || 'Google authentication failed. Please try again.');
     } finally {
@@ -98,85 +134,152 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   /**
-   * OAuth 2.0 Popup Flow (Standard Web & Capacitor compatible OAuth redirect/popup)
-   * Requests the authorization URL from the backend so GOOGLE_CLIENT_ID is always read
-   * fresh from the server runtime environment.
+   * OAuth 2.0 Flow (Standard Web, AI Studio Iframe & Android Capacitor compatible)
+   * Opens Google's OAuth authorization screen directly (never about:blank) and receives
+   * the completed CoinPulse session via postMessage, BroadcastChannel, storage, and server polling.
    */
   const handleDirectOAuthFlow = async () => {
     setError(null);
     setInfoMessage(null);
+    completedRef.current = false;
 
-    // Open popup synchronously on click gesture to prevent browser popup blockers
+    const platform = isNativeCapacitorOrigin() ? 'capacitor' : 'web';
+    const activeSid = authSessionId;
+
+    // Always open a real OAuth URL immediately (never about:blank)
+    const targetOAuthUrl =
+      prefetchedAuthUrl ||
+      api.getGoogleDirectStartUrl({
+        sid: activeSid,
+        redirectUri: `${window.location.origin}/auth/callback`,
+        referralCode: referralCode.trim() || undefined,
+        origin: window.location.origin,
+        platform,
+        mode: 'popup',
+      });
+
     const popup = window.open(
-      prefetchedAuthUrl || 'about:blank',
+      targetOAuthUrl,
       'google_auth_popup',
       'width=500,height=650,left=150,top=100'
     );
 
-    if (!popup || popup.closed) {
+    if (!popup) {
       setInfoMessage('Popup was blocked by your browser. Please allow popups for CoinPulse.');
       return;
     }
 
     setIsLoading(true);
 
-    // If the URL wasn't prefetched yet (e.g. fast click or server just restarted), fetch it live now
-    if (!prefetchedAuthUrl) {
-      try {
-        const urlRes = await api.getGoogleAuthUrl({
-          redirectUri: `${window.location.origin}/auth/callback`,
-          referralCode: referralCode.trim() || undefined,
-          origin: window.location.origin,
-        });
+    let pollInterval: number | undefined;
+    let bc: BroadcastChannel | null = null;
 
-        if (!urlRes.hasGoogleClientId || !urlRes.url) {
-          popup.close();
-          setIsLoading(false);
-          setHasGoogleClientId(false);
-          setError(
-            'Google Client ID is not yet configured on the server. Please set GOOGLE_CLIENT_ID in your environment variables, or enter a token below.'
-          );
-          setShowConfigHelp(true);
-          return;
-        }
-
-        setHasGoogleClientId(true);
-        setPrefetchedAuthUrl(urlRes.url);
-        popup.location.href = urlRes.url;
-      } catch (err: any) {
-        popup.close();
-        setIsLoading(false);
-        setError(
-          err.message ||
-            'Google Client ID is not yet configured. Please set GOOGLE_CLIENT_ID in your environment variables, or enter a token below.'
-        );
-        setShowConfigHelp(true);
-        return;
+    const cleanupListeners = () => {
+      if (pollInterval) window.clearInterval(pollInterval);
+      window.removeEventListener('message', messageHandler);
+      window.removeEventListener('storage', storageHandler);
+      if (bc) {
+        try {
+          bc.close();
+        } catch {}
+        bc = null;
       }
-    }
+      try {
+        if (popup && !popup.closed) {
+          popup.close();
+        }
+      } catch {}
+    };
 
-    // Listen for OAuth message from callback page
-    const messageHandler = (event: MessageEvent) => {
-      if (event.data?.type === 'GOOGLE_AUTH_SUCCESS' && event.data?.token) {
-        window.removeEventListener('message', messageHandler);
-        clearInterval(pollInterval);
-        handleGoogleTokenSubmit(event.data.token);
-      } else if (event.data?.type === 'GOOGLE_AUTH_ERROR') {
-        window.removeEventListener('message', messageHandler);
-        clearInterval(pollInterval);
+    const handlePayload = (payload: any) => {
+      if (!payload || completedRef.current) return;
+      if (payload.type === 'GOOGLE_AUTH_SUCCESS') {
+        cleanupListeners();
+        if (payload.session && payload.session.token && payload.session.user) {
+          completeWithVerifiedSession(payload.session);
+        } else if (payload.token) {
+          handleGoogleTokenSubmit(payload.token);
+        }
+      } else if (payload.type === 'GOOGLE_AUTH_ERROR') {
+        cleanupListeners();
         setIsLoading(false);
-        setError(event.data?.error || 'Google authentication was cancelled or failed.');
+        setError(payload.error || 'Google authentication was cancelled or failed.');
+        setAuthSessionId(generateClientAuthSessionId());
       }
     };
-    window.addEventListener('message', messageHandler);
 
-    const pollInterval = window.setInterval(() => {
-      if (popup.closed) {
-        clearInterval(pollInterval);
-        window.removeEventListener('message', messageHandler);
-        setIsLoading(false);
+    const messageHandler = (event: MessageEvent) => {
+      if (event.data?.type === 'GOOGLE_AUTH_SUCCESS' || event.data?.type === 'GOOGLE_AUTH_ERROR') {
+        handlePayload(event.data);
       }
-    }, 1000);
+    };
+
+    const storageHandler = (event: StorageEvent) => {
+      if (event.key === 'coinpulse_auth_event' && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue);
+          if (parsed?.payload) {
+            handlePayload(parsed.payload);
+          }
+        } catch {}
+      }
+    };
+
+    window.addEventListener('message', messageHandler);
+    window.addEventListener('storage', storageHandler);
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel('coinpulse_auth');
+        bc.onmessage = (ev) => handlePayload(ev.data);
+      } catch {}
+    }
+
+    // Server-side session handoff polling (guarantees return even if COOP severs window.opener or in Capacitor)
+    let ticks = 0;
+    pollInterval = window.setInterval(async () => {
+      ticks++;
+      if (completedRef.current) {
+        cleanupListeners();
+        return;
+      }
+
+      try {
+        const statusRes = await api.getGoogleAuthSession(activeSid);
+        if (statusRes.status === 'authenticated' && statusRes.session) {
+          cleanupListeners();
+          completeWithVerifiedSession(statusRes.session);
+          return;
+        }
+        if (statusRes.status === 'error') {
+          cleanupListeners();
+          setIsLoading(false);
+          setError(statusRes.error || 'Google sign-in was cancelled.');
+          setAuthSessionId(generateClientAuthSessionId());
+          return;
+        }
+      } catch {
+        // Ignore transient polling errors while user is on Google sign-in screen
+      }
+
+      // If popup was manually closed by user before completing sign-in (allow 2 extra ticks after close for callback POST)
+      if (popup.closed && ticks > 2) {
+        try {
+          const finalCheck = await api.getGoogleAuthSession(activeSid);
+          if (finalCheck.status === 'authenticated' && finalCheck.session) {
+            cleanupListeners();
+            completeWithVerifiedSession(finalCheck.session);
+            return;
+          }
+          if (finalCheck.status === 'error' && finalCheck.error) {
+            setError(finalCheck.error);
+          }
+        } catch {}
+        cleanupListeners();
+        setIsLoading(false);
+        setAuthSessionId(generateClientAuthSessionId());
+      }
+    }, 1200);
   };
 
   return (
