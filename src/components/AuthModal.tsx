@@ -1,12 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Shield, Sparkles, AlertCircle, CheckCircle2, HelpCircle } from 'lucide-react';
-import { api, isNativeCapacitorOrigin } from '../api.ts';
+import { api, getApiBaseUrl, isNativeCapacitorOrigin } from '../api.ts';
 import { User, BalanceState, MiningStatusResponse } from '../types.ts';
 
 declare global {
   interface Window {
     google?: any;
     handleGoogleCredentialResponse?: (response: any) => void;
+    CoinPulseNative?: {
+      openExternalUrl?: (url: string) => boolean;
+      consumePendingAuth?: () => string;
+    };
+    __COINPULSE_DEEP_LINK_AUTH__?: {
+      token?: string;
+      sid?: string;
+      error?: string;
+    };
   }
 }
 
@@ -70,14 +79,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         }
 
         if (isConfigured) {
-          const platform = isNativeCapacitorOrigin() ? 'capacitor' : 'web';
+          const isCap = isNativeCapacitorOrigin();
+          const platform = isCap ? 'capacitor' : 'web';
+          const effectiveRedirectUri = isCap
+            ? `${getApiBaseUrl()}/auth/callback`
+            : `${window.location.origin}/auth/callback`;
           const urlRes = await api.getGoogleAuthUrl({
             sid: authSessionId,
-            redirectUri: `${window.location.origin}/auth/callback`,
+            redirectUri: effectiveRedirectUri,
             referralCode: referralCode.trim() || undefined,
             origin: window.location.origin,
             platform,
-            mode: 'popup',
+            mode: isCap ? 'redirect' : 'popup',
           });
           if (isMounted && urlRes.url) {
             setPrefetchedAuthUrl(urlRes.url);
@@ -105,6 +118,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   }) => {
     if (completedRef.current) return;
     completedRef.current = true;
+    try {
+      localStorage.removeItem('coinpulse_pending_sid');
+    } catch {}
     api.setToken(sessionData.token);
     const normalizedBalance: BalanceState = {
       balance:
@@ -119,6 +135,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(false);
     onSuccess(sessionData.user, normalizedBalance, sessionData.miningState);
     onClose();
+  };
+
+  const restoreFromSessionToken = async (sessionToken: string, sid?: string) => {
+    if (!sessionToken || completedRef.current) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      if (sid) {
+        try {
+          const statusRes = await api.getGoogleAuthSession(sid);
+          if (statusRes.status === 'authenticated' && statusRes.session) {
+            completeWithVerifiedSession(statusRes.session);
+            return;
+          }
+        } catch {}
+      }
+      api.setToken(sessionToken);
+      const [meRes, statusRes] = await Promise.all([api.getMe(), api.getMiningStatus()]);
+      completeWithVerifiedSession({
+        token: sessionToken,
+        user: meRes.user,
+        balance: meRes.balance,
+        miningState: statusRes,
+      });
+    } catch (err: any) {
+      api.setToken(null);
+      setIsLoading(false);
+      setError(err.message || 'Failed to restore authenticated session.');
+    }
   };
 
   const handleGoogleTokenSubmit = async (tokenString: string) => {
@@ -151,8 +196,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
    *    and the current origin is an Authorized JavaScript Origin (.run.app), uses Google's official
    *    storagerelay:// popup channel so the popup returns the OAuth token directly to this window
    *    without triggering AI Studio's top-level proxy auth bridge redirect on /auth/callback.
-   * 2. Falls back to the /api/auth/google/start -> /auth/callback + server-polling flow for
-   *    Android Capacitor WebViews or environments where gsi/client is unavailable.
+   * 2. On Android Capacitor (`isNativeCapacitorOrigin()`), opens Google OAuth in the system browser
+   *    (Chrome) via the native intent bridge or external anchor so the WebView stays on CoinPulse,
+   *    and receives the authenticated session via `com.coinpulse.mining://auth` deep link + server polling.
    */
   const handleDirectOAuthFlow = async () => {
     setError(null);
@@ -205,28 +251,62 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     const platform = isCap ? 'capacitor' : 'web';
     const activeSid = authSessionId;
+    const effectiveRedirectUri = isCap
+      ? `${getApiBaseUrl()}/auth/callback`
+      : `${window.location.origin}/auth/callback`;
+
+    try {
+      localStorage.setItem('coinpulse_pending_sid', activeSid);
+    } catch {}
 
     // Always open a real OAuth URL immediately (never about:blank)
     const targetOAuthUrl =
       prefetchedAuthUrl ||
       api.getGoogleDirectStartUrl({
         sid: activeSid,
-        redirectUri: `${window.location.origin}/auth/callback`,
+        redirectUri: effectiveRedirectUri,
         referralCode: referralCode.trim() || undefined,
         origin: window.location.origin,
         platform,
-        mode: 'popup',
+        mode: isCap ? 'redirect' : 'popup',
       });
 
-    const popup = window.open(
-      targetOAuthUrl,
-      'google_auth_popup',
-      'width=500,height=650,left=150,top=100'
-    );
+    let popup: Window | null = null;
 
-    if (!popup) {
-      setInfoMessage('Popup was blocked by your browser. Please allow popups for CoinPulse.');
-      return;
+    if (isCap) {
+      // On Android Capacitor, launch Chrome / system browser via Intent so the WebView stays on CoinPulse
+      let launchedNatively = false;
+      try {
+        if (window.CoinPulseNative?.openExternalUrl) {
+          launchedNatively = Boolean(window.CoinPulseNative.openExternalUrl(targetOAuthUrl));
+        }
+      } catch {}
+
+      if (!launchedNatively) {
+        const link = document.createElement('a');
+        link.href = targetOAuthUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+          try {
+            document.body.removeChild(link);
+          } catch {}
+        }, 200);
+      }
+    } else {
+      popup = window.open(
+        targetOAuthUrl,
+        'google_auth_popup',
+        'width=500,height=650,left=150,top=100'
+      );
+
+      if (!popup) {
+        setInfoMessage('Popup was blocked by your browser. Please allow popups for CoinPulse.');
+        return;
+      }
     }
 
     setIsLoading(true);
@@ -238,6 +318,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (pollInterval) window.clearInterval(pollInterval);
       window.removeEventListener('message', messageHandler);
       window.removeEventListener('storage', storageHandler);
+      window.removeEventListener('coinpulse-deep-link-auth', deepLinkHandler as EventListener);
+      document.removeEventListener('visibilitychange', visibilityHandler);
+      window.removeEventListener('focus', visibilityHandler);
       if (bc) {
         try {
           bc.close();
@@ -285,23 +368,45 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
     };
 
-    window.addEventListener('message', messageHandler);
-    window.addEventListener('storage', storageHandler);
-
-    if (typeof BroadcastChannel !== 'undefined') {
-      try {
-        bc = new BroadcastChannel('coinpulse_auth');
-        bc.onmessage = (ev) => handlePayload(ev.data);
-      } catch {}
-    }
-
-    // Server-side session handoff polling (guarantees return even if COOP severs window.opener or in Capacitor)
-    let ticks = 0;
-    pollInterval = window.setInterval(async () => {
-      ticks++;
-      if (completedRef.current) {
+    const deepLinkHandler = (event: CustomEvent) => {
+      if (completedRef.current) return;
+      const detail = event.detail || window.__COINPULSE_DEEP_LINK_AUTH__ || {};
+      if (detail.token) {
         cleanupListeners();
-        return;
+        restoreFromSessionToken(detail.token, detail.sid || activeSid);
+      } else if (detail.error) {
+        cleanupListeners();
+        setIsLoading(false);
+        setError(detail.error);
+        setAuthSessionId(generateClientAuthSessionId());
+      }
+    };
+
+    const checkSessionNow = async () => {
+      if (completedRef.current) return;
+
+      // Check native bridge pending auth first if on Android
+      if (isCap) {
+        try {
+          if (window.CoinPulseNative?.consumePendingAuth) {
+            const raw = window.CoinPulseNative.consumePendingAuth();
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (parsed?.token) {
+                cleanupListeners();
+                await restoreFromSessionToken(parsed.token, parsed.sid || activeSid);
+                return;
+              }
+              if (parsed?.error) {
+                cleanupListeners();
+                setIsLoading(false);
+                setError(parsed.error);
+                setAuthSessionId(generateClientAuthSessionId());
+                return;
+              }
+            }
+          }
+        } catch {}
       }
 
       try {
@@ -321,20 +426,50 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       } catch {
         // Ignore transient polling errors while user is on Google sign-in screen
       }
+    };
 
-      // If popup was manually closed by user before completing sign-in (allow 2 extra ticks after close for callback POST)
-      if (popup.closed && ticks > 2) {
-        try {
-          const finalCheck = await api.getGoogleAuthSession(activeSid);
-          if (finalCheck.status === 'authenticated' && finalCheck.session) {
-            cleanupListeners();
-            completeWithVerifiedSession(finalCheck.session);
-            return;
-          }
-          if (finalCheck.status === 'error' && finalCheck.error) {
-            setError(finalCheck.error);
-          }
-        } catch {}
+    const visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        checkSessionNow();
+      }
+    };
+
+    window.addEventListener('message', messageHandler);
+    window.addEventListener('storage', storageHandler);
+    window.addEventListener('coinpulse-deep-link-auth', deepLinkHandler as EventListener);
+    document.addEventListener('visibilitychange', visibilityHandler);
+    window.addEventListener('focus', visibilityHandler);
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel('coinpulse_auth');
+        bc.onmessage = (ev) => handlePayload(ev.data);
+      } catch {}
+    }
+
+    // Server-side session handoff polling (guarantees return even if COOP severs window.opener or in Capacitor)
+    let ticks = 0;
+    pollInterval = window.setInterval(async () => {
+      ticks++;
+      if (completedRef.current) {
+        cleanupListeners();
+        return;
+      }
+
+      await checkSessionNow();
+      if (completedRef.current) return;
+
+      // On web popup only: if popup was manually closed by user before completing sign-in
+      if (!isCap && popup && popup.closed && ticks > 2) {
+        await checkSessionNow();
+        if (completedRef.current) return;
+        cleanupListeners();
+        setIsLoading(false);
+        setAuthSessionId(generateClientAuthSessionId());
+      }
+
+      // Timeout after 5 minutes on mobile Capacitor
+      if (isCap && ticks > 250) {
         cleanupListeners();
         setIsLoading(false);
         setAuthSessionId(generateClientAuthSessionId());

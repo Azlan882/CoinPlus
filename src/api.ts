@@ -11,7 +11,14 @@ import {
 
 const TOKEN_KEY = 'coinpulse_session_token';
 
+const DEV_BACKEND_URL =
+  'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app';
+const PRE_BACKEND_URL =
+  'https://ais-pre-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app';
+
 declare const __COINPULSE_APP_URL__: string | undefined;
+
+let resolvedNativeBackendUrl: string | null = null;
 
 export function isNativeCapacitorOrigin(): boolean {
   if (typeof window === 'undefined') return false;
@@ -26,13 +33,24 @@ export function isNativeCapacitorOrigin(): boolean {
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') return '';
   if (isNativeCapacitorOrigin()) {
+    if (resolvedNativeBackendUrl) {
+      return resolvedNativeBackendUrl;
+    }
     const configuredUrl =
       typeof __COINPULSE_APP_URL__ !== 'undefined' && __COINPULSE_APP_URL__
-        ? __COINPULSE_APP_URL__
-        : 'https://ais-pre-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app';
-    return configuredUrl.replace(/\/+$/, '');
+        ? __COINPULSE_APP_URL__.replace(/\/+$/, '')
+        : DEV_BACKEND_URL;
+    // Prefer DEV_BACKEND_URL as primary since ais-pre returns 404 unless explicitly deployed
+    if (configuredUrl === PRE_BACKEND_URL) {
+      return DEV_BACKEND_URL;
+    }
+    return configuredUrl;
   }
   return '';
+}
+
+function getFallbackBackendUrl(currentBase: string): string {
+  return currentBase === DEV_BACKEND_URL ? PRE_BACKEND_URL : DEV_BACKEND_URL;
 }
 
 class ApiService {
@@ -43,6 +61,12 @@ class ApiService {
   }
 
   getToken(): string | null {
+    if (!this.token && typeof window !== 'undefined') {
+      const stored = localStorage.getItem(TOKEN_KEY);
+      if (stored) {
+        this.token = stored;
+      }
+    }
     return this.token;
   }
 
@@ -61,17 +85,40 @@ class ApiService {
       ...(options.headers as Record<string, string>),
     };
 
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+    const currentToken = this.getToken();
+    if (currentToken) {
+      headers['Authorization'] = `Bearer ${currentToken}`;
     }
 
-    const url = endpoint.startsWith('http') ? endpoint : `${getApiBaseUrl()}${endpoint}`;
+    const baseUrl = getApiBaseUrl();
+    const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
 
     try {
-      const response = await fetch(url, {
+      let response = await fetch(url, {
         ...options,
         headers,
       });
+
+      // Automatic failover between ais-dev and ais-pre when running inside Android Capacitor APK
+      if (
+        !endpoint.startsWith('http') &&
+        isNativeCapacitorOrigin() &&
+        (response.status === 404 || response.status === 502 || response.status === 503)
+      ) {
+        const altBase = getFallbackBackendUrl(baseUrl);
+        try {
+          const altRes = await fetch(`${altBase}${endpoint}`, {
+            ...options,
+            headers,
+          });
+          if (altRes.ok || altRes.status !== 404) {
+            resolvedNativeBackendUrl = altBase;
+            response = altRes;
+          }
+        } catch {
+          // Keep original response if fallback fails
+        }
+      }
 
       const data = await response.json();
 

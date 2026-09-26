@@ -119,6 +119,74 @@ export default function App() {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
 
+    // Check if Android MainActivity injected a deep-link token before React mounted
+    if (window.__COINPULSE_DEEP_LINK_AUTH__?.token) {
+      api.setToken(window.__COINPULSE_DEEP_LINK_AUTH__.token);
+      window.__COINPULSE_DEEP_LINK_AUTH__ = undefined;
+    } else if (window.CoinPulseNative?.consumePendingAuth) {
+      try {
+        const raw = window.CoinPulseNative.consumePendingAuth();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.token) {
+            api.setToken(parsed.token);
+          }
+        }
+      } catch {}
+    }
+
+    const handleDeepLinkAuth = (event: Event) => {
+      const customEv = event as CustomEvent;
+      const detail = customEv.detail || window.__COINPULSE_DEEP_LINK_AUTH__ || {};
+      if (detail.token) {
+        api.setToken(detail.token);
+        setIsAuthOpen(false);
+        syncServerData();
+      } else if (detail.error) {
+        showNotification(detail.error, 'error');
+      }
+    };
+
+    const handleAppResume = async () => {
+      if (document.visibilityState !== 'visible') return;
+      if (window.__COINPULSE_DEEP_LINK_AUTH__?.token) {
+        api.setToken(window.__COINPULSE_DEEP_LINK_AUTH__.token);
+        window.__COINPULSE_DEEP_LINK_AUTH__ = undefined;
+        setIsAuthOpen(false);
+        syncServerData();
+        return;
+      }
+      const pendingSid = localStorage.getItem('coinpulse_pending_sid');
+      if (pendingSid && !api.getToken()) {
+        try {
+          const res = await api.getGoogleAuthSession(pendingSid);
+          if (res.status === 'authenticated' && res.session) {
+            localStorage.removeItem('coinpulse_pending_sid');
+            api.setToken(res.session.token);
+            setCurrentUser(res.session.user);
+            setBalance({
+              balance:
+                typeof res.session.balance?.totalBalance === 'number'
+                  ? res.session.balance.totalBalance
+                  : res.session.balance?.balance ?? 0,
+              totalMined: res.session.balance?.totalMined ?? 0,
+              totalReferralBonus: res.session.balance?.totalReferralBonus ?? 0,
+              lastCalculatedAt: res.session.balance?.lastCalculatedAt ?? new Date().toISOString(),
+              integrityVerified: true,
+            });
+            setMiningStatus(res.session.miningState);
+            setIsAuthOpen(false);
+            showNotification(res.session.message || 'Signed in with Google!', 'success');
+            syncServerData();
+          }
+        } catch {}
+      }
+    };
+
+    window.addEventListener('coinpulse-deep-link-auth', handleDeepLinkAuth);
+    document.addEventListener('visibilitychange', handleAppResume);
+    window.addEventListener('focus', handleAppResume);
+
     const pendingGoogleToken = sessionStorage.getItem('pending_google_token');
     if (pendingGoogleToken) {
       sessionStorage.removeItem('pending_google_token');
@@ -152,6 +220,9 @@ export default function App() {
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('coinpulse-deep-link-auth', handleDeepLinkAuth);
+      document.removeEventListener('visibilitychange', handleAppResume);
+      window.removeEventListener('focus', handleAppResume);
     };
   }, [syncServerData]);
 

@@ -8,7 +8,7 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss()],
     define: {
       __COINPULSE_APP_URL__: JSON.stringify(
-        process.env.APP_URL || 'https://ais-pre-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app'
+        process.env.APP_URL || 'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app'
       ),
     },
     resolve: {

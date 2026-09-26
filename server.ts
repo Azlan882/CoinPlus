@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'node:fs';
+import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import apiRouter from './server/api.ts';
@@ -8,7 +10,30 @@ import { hasGoogleClientIdConfigured } from './server/googleAuth.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * Ensures the container Nginx Lua auth filter allows public OAuth callbacks (/auth/callback)
+ * and mobile API requests (/api/) from external Android Capacitor clients without redirecting
+ * to AI Studio's iframe-only applet-auth-bridge.
+ */
+function ensureExternalOAuthCallbackAllowed(): void {
+  const luaPath = '/etc/nginx/user_auth_verification.lua';
+  try {
+    if (!fs.existsSync(luaPath)) return;
+    const content = fs.readFileSync(luaPath, 'utf8');
+    if (content.includes('^/auth/callback')) return;
+    const anchor = 'if ngx.var.host == "localhost" then\n  return\nend';
+    const bypassBlock = `${anchor}\n\n-- Allow OAuth callback and API routes for mobile APK and external OAuth redirects\nif string.match(ngx.var.uri, "^/api/") or string.match(ngx.var.uri, "^/auth/callback") then\n  return\nend`;
+    if (content.includes(anchor)) {
+      fs.writeFileSync(luaPath, content.replace(anchor, bypassBlock), 'utf8');
+      execSync('nginx -s reload', { stdio: 'ignore' });
+    }
+  } catch {
+    // Ignore if not running inside the Nginx container environment
+  }
+}
+
 async function startServer() {
+  ensureExternalOAuthCallbackAllowed();
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
   const isProduction = process.env.NODE_ENV === 'production';
@@ -184,6 +209,29 @@ async function startServer() {
           } catch (e) {}
         }
 
+        var isCapacitorOrAndroid =
+          parsedState.platform === 'capacitor' ||
+          (parsedState.origin &&
+            (parsedState.origin.indexOf('://localhost') !== -1 ||
+              parsedState.origin.indexOf('capacitor://') !== -1)) ||
+          /Android/i.test(navigator.userAgent || '');
+
+        function buildDeepLink(sessionToken, errorMsg, useIntentScheme) {
+          var params = new URLSearchParams();
+          if (sessionToken) params.set('token', sessionToken);
+          if (parsedState.sid) params.set('sid', parsedState.sid);
+          if (errorMsg) params.set('error', errorMsg);
+          var qs = params.toString();
+          if (useIntentScheme) {
+            return (
+              'intent://auth?' +
+              qs +
+              '#Intent;scheme=com.coinpulse.mining;package=com.coinpulse.mining;end'
+            );
+          }
+          return 'com.coinpulse.mining://auth?' + qs;
+        }
+
         function broadcastMessage(payload) {
           try {
             if (typeof BroadcastChannel !== 'undefined') {
@@ -223,24 +271,20 @@ async function startServer() {
           }
         }
 
-        function closeOrReturn(sessionToken) {
-          if (parsedState.platform === 'capacitor' && sessionToken) {
-            var deepLink = 'com.coinpulse.mining://auth?token=' + encodeURIComponent(sessionToken);
+        function closeOrReturn(sessionToken, errorMsg, preferIntent) {
+          if (isCapacitorOrAndroid) {
+            var deepLink = buildDeepLink(sessionToken, errorMsg, Boolean(preferIntent));
             window.location.href = deepLink;
+            if (!preferIntent) {
+              setTimeout(function() {
+                window.location.href = buildDeepLink(sessionToken, errorMsg, true);
+              }, 500);
+            }
             return;
           }
           try {
             window.close();
           } catch (e) {}
-          setTimeout(function() {
-            if (!window.closed) {
-              if (sessionToken) {
-                window.location.replace('/?token=' + encodeURIComponent(sessionToken));
-              } else {
-                window.location.replace('/');
-              }
-            }
-          }, 400);
         }
 
         if (oauthError || !idToken) {
@@ -267,14 +311,14 @@ async function startServer() {
           showResultUI(
             false,
             'Google Sign-In Cancelled',
-            friendlyError + ' You may now close this window and return to CoinPulse.',
-            'Close Window',
-            function() { closeOrReturn(''); }
+            friendlyError + ' Returning to CoinPulse...',
+            isCapacitorOrAndroid ? 'Return to CoinPulse App' : 'Close Window',
+            function() { closeOrReturn('', friendlyError, true); }
           );
 
           setTimeout(function() {
-            closeOrReturn('');
-          }, 900);
+            closeOrReturn('', friendlyError, false);
+          }, 600);
           return;
         }
 
@@ -305,8 +349,8 @@ async function startServer() {
                 false,
                 'Authentication Failed',
                 errMsg,
-                'Close Window',
-                function() { closeOrReturn(''); }
+                isCapacitorOrAndroid ? 'Return to CoinPulse App' : 'Close Window',
+                function() { closeOrReturn('', errMsg, true); }
               );
               return;
             }
@@ -331,13 +375,13 @@ async function startServer() {
               true,
               'Signed In as ' + username,
               'Your CoinPulse account is now active. Returning to the app automatically...',
-              parsedState.platform === 'capacitor' ? 'Open CoinPulse App' : 'Close Window',
-              function() { closeOrReturn(sessionData.token); }
+              isCapacitorOrAndroid ? 'Open CoinPulse App' : 'Close Window',
+              function() { closeOrReturn(sessionData.token, '', true); }
             );
 
             setTimeout(function() {
-              closeOrReturn(sessionData.token);
-            }, 350);
+              closeOrReturn(sessionData.token, '', false);
+            }, 250);
           })
           .catch(function(err) {
             var netMsg = (err && err.message) || 'Network error verifying Google sign-in.';
@@ -350,8 +394,8 @@ async function startServer() {
               false,
               'Connection Error',
               netMsg,
-              'Close Window',
-              function() { closeOrReturn(''); }
+              isCapacitorOrAndroid ? 'Return to CoinPulse App' : 'Close Window',
+              function() { closeOrReturn('', netMsg, true); }
             );
           });
       })();

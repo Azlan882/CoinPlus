@@ -109,6 +109,8 @@ jobs:
         run: npm ci
 
       - name: Build Web Application Assets
+        env:
+          APP_URL: https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app
         run: npm run build
 
       - name: Sync Capacitor Android Project

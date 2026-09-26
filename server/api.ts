@@ -126,9 +126,24 @@ function buildGoogleOAuthUrlForRequest(req: Request): {
   const redirectUri = resolveGoogleRedirectUri(req);
 
   const referralCode = typeof req.query.ref === 'string' ? req.query.ref.trim().toUpperCase() : '';
-  const origin = typeof req.query.origin === 'string' ? req.query.origin.trim() : baseAppUrl;
-  const platform = typeof req.query.platform === 'string' ? req.query.platform.trim() : 'web';
-  const mode = typeof req.query.mode === 'string' ? req.query.mode.trim() : 'popup';
+  const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  const origin =
+    typeof req.query.origin === 'string' && req.query.origin.trim()
+      ? req.query.origin.trim()
+      : originHeader || baseAppUrl;
+  const isCapacitorOrigin =
+    origin.startsWith('capacitor://') ||
+    origin === 'https://localhost' ||
+    origin === 'http://localhost' ||
+    origin.startsWith('https://localhost/') ||
+    origin.startsWith('http://localhost/');
+  const platform =
+    typeof req.query.platform === 'string' && req.query.platform.trim()
+      ? req.query.platform.trim()
+      : isCapacitorOrigin
+        ? 'capacitor'
+        : 'web';
+  const mode = typeof req.query.mode === 'string' ? req.query.mode.trim() : isCapacitorOrigin ? 'redirect' : 'popup';
   const authSessionId =
     typeof req.query.sid === 'string' && req.query.sid.trim()
       ? req.query.sid.trim()
