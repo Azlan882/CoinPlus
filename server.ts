@@ -38,13 +38,14 @@ async function startServer() {
     if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Vary', 'Origin');
     } else {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-CoinPulse-Checkpoint, Accept, Cache-Control, Pragma'
+      'Content-Type, Authorization, X-CoinPulse-Token, X-CoinPulse-Checkpoint, Accept, Cache-Control, Pragma'
     );
     res.setHeader('Access-Control-Expose-Headers', 'X-CoinPulse-Checkpoint, X-CoinPulse-Warmup');
     res.setHeader('Access-Control-Max-Age', '86400');

@@ -1,8 +1,11 @@
 package com.coinpulse.mining;
 
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
+import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
@@ -10,14 +13,23 @@ import org.json.JSONObject;
 
 public class MainActivity extends BridgeActivity {
 
+    private static final String PREFS_NAME = "CoinPulseAuthPrefs";
+    private static final String KEY_TOKEN = "coinpulse_session_token";
+    private static final String KEY_CKPT = "coinpulse_state_checkpoint";
+
     private String pendingToken = "";
     private String pendingSid = "";
     private String pendingCkpt = "";
     private String pendingError = "";
 
+    private SharedPreferences getAuthPrefs() {
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        configureWebViewCookies();
         registerNativeBridge();
         handleDeepLinkIntent(getIntent());
     }
@@ -30,8 +42,18 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onPause() {
+        super.onPause();
+        try {
+            CookieManager.getInstance().flush();
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
     public void onResume() {
         super.onResume();
+        configureWebViewCookies();
         registerNativeBridge();
         if (this.bridge == null || this.bridge.getWebView() == null) {
             return;
@@ -40,20 +62,48 @@ public class MainActivity extends BridgeActivity {
         try {
             webView.onResume();
             webView.resumeTimers();
+            CookieManager.getInstance().flush();
         } catch (Exception ignored) {
         }
+
+        final String savedToken = getAuthPrefs().getString(KEY_TOKEN, "");
+        final String savedCkpt = getAuthPrefs().getString(KEY_CKPT, "");
+
         int[] delays = new int[] { 0, 150, 600 };
         for (int delay : delays) {
             webView.postDelayed(() -> {
                 try {
-                    String js = "(function(){" +
-                        "window.dispatchEvent(new CustomEvent('coinpulse-app-resume', { detail: { timestamp: Date.now() } }));" +
-                        "document.dispatchEvent(new Event('resume'));" +
-                        "})();";
-                    webView.evaluateJavascript(js, null);
+                    StringBuilder js = new StringBuilder();
+                    js.append("(function(){");
+                    if (savedToken != null && !savedToken.isEmpty()) {
+                        js.append("try { if (!localStorage.getItem('coinpulse_session_token')) { localStorage.setItem('coinpulse_session_token', ")
+                          .append(JSONObject.quote(savedToken))
+                          .append("); } } catch(e){}");
+                    }
+                    if (savedCkpt != null && !savedCkpt.isEmpty()) {
+                        js.append("try { if (!localStorage.getItem('coinpulse_state_checkpoint')) { localStorage.setItem('coinpulse_state_checkpoint', ")
+                          .append(JSONObject.quote(savedCkpt))
+                          .append("); } } catch(e){}");
+                    }
+                    js.append("window.dispatchEvent(new CustomEvent('coinpulse-app-resume', { detail: { timestamp: Date.now() } }));");
+                    js.append("document.dispatchEvent(new Event('resume'));");
+                    js.append("})();");
+                    webView.evaluateJavascript(js.toString(), null);
                 } catch (Exception ignored) {
                 }
             }, delay);
+        }
+    }
+
+    private void configureWebViewCookies() {
+        try {
+            CookieManager cookieManager = CookieManager.getInstance();
+            cookieManager.setAcceptCookie(true);
+            if (this.bridge != null && this.bridge.getWebView() != null) {
+                cookieManager.setAcceptThirdPartyCookies(this.bridge.getWebView(), true);
+            }
+            cookieManager.flush();
+        } catch (Exception ignored) {
         }
     }
 
@@ -86,6 +136,60 @@ public class MainActivity extends BridgeActivity {
                 return true;
             } catch (Exception e) {
                 return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String getPersistedToken() {
+            try {
+                return getAuthPrefs().getString(KEY_TOKEN, "");
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public void setPersistedToken(final String token) {
+            try {
+                SharedPreferences.Editor editor = getAuthPrefs().edit();
+                if (token == null || token.trim().isEmpty()) {
+                    editor.remove(KEY_TOKEN);
+                } else {
+                    editor.putString(KEY_TOKEN, token.trim());
+                }
+                editor.apply();
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public String getPersistedCheckpoint() {
+            try {
+                return getAuthPrefs().getString(KEY_CKPT, "");
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public void setPersistedCheckpoint(final String ckpt) {
+            try {
+                if (ckpt != null && !ckpt.trim().isEmpty()) {
+                    getAuthPrefs().edit().putString(KEY_CKPT, ckpt.trim()).apply();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public void clearPersistedSession() {
+            try {
+                getAuthPrefs().edit().remove(KEY_TOKEN).apply();
+                pendingToken = "";
+                pendingSid = "";
+                pendingError = "";
+                CookieManager.getInstance().flush();
+            } catch (Exception ignored) {
             }
         }
 
@@ -129,6 +233,18 @@ public class MainActivity extends BridgeActivity {
         try {
             intent.setData(null);
             setIntent(intent);
+        } catch (Exception ignored) {
+        }
+
+        try {
+            SharedPreferences.Editor editor = getAuthPrefs().edit();
+            if (!token.isEmpty()) {
+                editor.putString(KEY_TOKEN, token);
+            }
+            if (!ckpt.isEmpty()) {
+                editor.putString(KEY_CKPT, ckpt);
+            }
+            editor.apply();
         } catch (Exception ignored) {
         }
 

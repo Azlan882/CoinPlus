@@ -22,9 +22,18 @@ declare const __COINPULSE_APP_URL__: string | undefined;
 
 export interface ApiError extends Error {
   status?: number;
+  errorCategory?: 'network' | 'auth' | 'server' | 'http';
   endpoint?: string;
   serverMessage?: string;
   data?: any;
+}
+
+function sanitizeDiagnosticText(input: string): string {
+  if (!input) return '';
+  return input
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/(token|cookie|secret|key)=([^&\s;]+)/gi, '$1=[REDACTED]')
+    .slice(0, 240);
 }
 
 export interface CachedUserSession {
@@ -85,8 +94,20 @@ class ApiService {
   constructor() {
     if (typeof window !== 'undefined') {
       try {
-        this.token = localStorage.getItem(TOKEN_KEY);
-        this.checkpoint = localStorage.getItem(CHECKPOINT_KEY);
+        this.token =
+          localStorage.getItem(TOKEN_KEY) ||
+          (window as any).CoinPulseNative?.getPersistedToken?.() ||
+          null;
+        if (this.token) {
+          localStorage.setItem(TOKEN_KEY, this.token);
+        }
+        this.checkpoint =
+          localStorage.getItem(CHECKPOINT_KEY) ||
+          (window as any).CoinPulseNative?.getPersistedCheckpoint?.() ||
+          null;
+        if (this.checkpoint) {
+          localStorage.setItem(CHECKPOINT_KEY, this.checkpoint);
+        }
       } catch {}
     }
   }
@@ -94,9 +115,13 @@ class ApiService {
   getToken(): string | null {
     if (!this.token && typeof window !== 'undefined') {
       try {
-        const stored = localStorage.getItem(TOKEN_KEY);
+        const stored =
+          localStorage.getItem(TOKEN_KEY) ||
+          (window as any).CoinPulseNative?.getPersistedToken?.() ||
+          null;
         if (stored) {
           this.token = stored;
+          localStorage.setItem(TOKEN_KEY, stored);
         }
       } catch {}
     }
@@ -104,13 +129,15 @@ class ApiService {
   }
 
   setToken(token: string | null) {
-    this.token = token;
+    this.token = token && token.trim() ? token.trim() : null;
     if (typeof window !== 'undefined') {
       try {
-        if (token) {
-          localStorage.setItem(TOKEN_KEY, token);
+        if (this.token) {
+          localStorage.setItem(TOKEN_KEY, this.token);
+          (window as any).CoinPulseNative?.setPersistedToken?.(this.token);
         } else {
           localStorage.removeItem(TOKEN_KEY);
+          (window as any).CoinPulseNative?.setPersistedToken?.('');
         }
       } catch {}
     }
@@ -143,9 +170,13 @@ class ApiService {
   getCheckpoint(): string | null {
     if (!this.checkpoint && typeof window !== 'undefined') {
       try {
-        const stored = localStorage.getItem(CHECKPOINT_KEY);
+        const stored =
+          localStorage.getItem(CHECKPOINT_KEY) ||
+          (window as any).CoinPulseNative?.getPersistedCheckpoint?.() ||
+          null;
         if (stored) {
           this.checkpoint = stored;
+          localStorage.setItem(CHECKPOINT_KEY, stored);
         }
       } catch {}
     }
@@ -183,6 +214,7 @@ class ApiService {
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem(CHECKPOINT_KEY, checkpoint);
+        (window as any).CoinPulseNative?.setPersistedCheckpoint?.(checkpoint);
         const parsed = decodeCheckpointPayload(checkpoint);
         if (parsed?.userId) {
           localStorage.setItem(`${CHECKPOINT_KEY}_${parsed.userId}`, checkpoint);
@@ -216,6 +248,7 @@ class ApiService {
     const currentToken = this.getToken();
     if (currentToken) {
       headers['Authorization'] = `Bearer ${currentToken}`;
+      headers['X-CoinPulse-Token'] = currentToken;
     }
 
     const currentCheckpoint = this.getCheckpoint();
@@ -233,13 +266,14 @@ class ApiService {
     let rawText = '';
     let lastNetworkError: any = null;
 
-    // Up to 8 attempts to handle stale Android WebView keep-alive sockets after 1h idle or Cloud Run cold-start warmup
-    const maxAttempts = 8;
+    // Up to 5 attempts to handle stale Android WebView keep-alive sockets after 1h idle or Cloud Run cold-start warmup
+    const maxAttempts = 5;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         response = await fetch(primaryUrl, {
           cache: 'no-store',
           mode: 'cors',
+          credentials: 'include',
           ...options,
           headers,
         });
@@ -260,7 +294,7 @@ class ApiService {
               trimmed.includes('<title>Cookie check</title>')));
 
         if (isWarmupOrBridgeHtml && attempt < maxAttempts) {
-          await sleep(Math.min(2500, 500 * attempt));
+          await sleep(Math.min(2000, 450 * attempt));
           continue;
         }
 
@@ -269,19 +303,25 @@ class ApiService {
         lastNetworkError = fetchErr;
         response = null;
         if (attempt < maxAttempts) {
-          await sleep(Math.min(2000, 450 * attempt));
+          await sleep(Math.min(1500, 350 * attempt));
           continue;
         }
       }
     }
 
     if (!response) {
-      const safeErrDetail =
+      const safeErrDetail = sanitizeDiagnosticText(
         lastNetworkError && typeof lastNetworkError.message === 'string'
           ? lastNetworkError.message
-          : 'Unreachable host';
-      console.error(`[CoinPulse API] Network failure on ${method} ${cleanEndpoint} (${ safeErrDetail })`);
-      throw new Error(`Network connection failed. Check your network. (${method} ${cleanEndpoint})`);
+          : 'Unreachable host'
+      );
+      console.error(`[CoinPulse API] Network failure on ${method} ${cleanEndpoint} (${safeErrDetail})`);
+      const netErr: ApiError = new Error(
+        `Network failure: Unable to reach server (${safeErrDetail}) [${method} ${cleanEndpoint}]`
+      );
+      netErr.errorCategory = 'network';
+      netErr.endpoint = cleanEndpoint;
+      throw netErr;
     }
 
     let data: any = null;
@@ -307,16 +347,31 @@ class ApiService {
         this.setToken(null);
         this.setCachedSession(null);
       }
-      const serverMessage =
+
+      const rawServerMessage =
         (data && typeof data.error === 'string' && data.error) ||
         (data && typeof data.message === 'string' && data.message) ||
-        `Server returned HTTP ${response.status}`;
-      const formattedHttpError = `${serverMessage} [HTTP ${response.status} ${cleanEndpoint}]`;
+        (rawText && !rawText.trim().startsWith('<') ? rawText.trim().slice(0, 140) : '') ||
+        `HTTP ${response.status}`;
+      const serverMessage = sanitizeDiagnosticText(rawServerMessage);
+
+      let errorCategory: 'auth' | 'server' | 'http' = 'http';
+      let formattedHttpError = `${serverMessage} [HTTP ${response.status} ${method} ${cleanEndpoint}]`;
+
+      if (response.status === 401 || response.status === 403) {
+        errorCategory = 'auth';
+        formattedHttpError = `Authentication error (HTTP ${response.status} on ${method} ${cleanEndpoint}): ${serverMessage}`;
+      } else if (response.status >= 500) {
+        errorCategory = 'server';
+        formattedHttpError = `Server error (HTTP ${response.status} on ${method} ${cleanEndpoint}): ${serverMessage}`;
+      }
+
       console.warn(
-        `[CoinPulse API] HTTP ${response.status} on ${method} ${cleanEndpoint}: ${serverMessage}`
+        `[CoinPulse API] HTTP ${response.status} (${errorCategory}) on ${method} ${cleanEndpoint}: ${serverMessage}`
       );
       const apiErr: ApiError = new Error(formattedHttpError);
       apiErr.status = response.status;
+      apiErr.errorCategory = errorCategory;
       apiErr.endpoint = cleanEndpoint;
       apiErr.serverMessage = serverMessage;
       apiErr.data = data;
@@ -324,10 +379,11 @@ class ApiService {
     }
 
     if (!data || typeof data !== 'object') {
-      const nonJsonMsg = `Server is warming up or returned non-JSON response [HTTP ${response.status} ${cleanEndpoint}]. Please retry in a moment.`;
+      const nonJsonMsg = `Server returned non-JSON response [HTTP ${response.status} ${method} ${cleanEndpoint}]. Please retry in a moment.`;
       console.warn(`[CoinPulse API] Non-JSON response on ${method} ${cleanEndpoint} (HTTP ${response.status})`);
       const nonJsonErr: ApiError = new Error(nonJsonMsg);
       nonJsonErr.status = response.status;
+      nonJsonErr.errorCategory = 'server';
       nonJsonErr.endpoint = cleanEndpoint;
       throw nonJsonErr;
     }
@@ -467,6 +523,19 @@ class ApiService {
   logout() {
     this.setToken(null);
     this.setCachedSession(null);
+    if (typeof window !== 'undefined') {
+      try {
+        (window as any).CoinPulseNative?.clearPersistedSession?.();
+      } catch {}
+      try {
+        const baseUrl = getApiBaseUrl();
+        fetch(`${baseUrl}/api/auth/logout`, {
+          method: 'POST',
+          mode: 'cors',
+          credentials: 'include',
+        }).catch(() => {});
+      } catch {}
+    }
     // Intentionally preserve coinpulse_state_checkpoint so the user's server-signed balance receipt is never lost
   }
 

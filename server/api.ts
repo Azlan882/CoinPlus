@@ -30,6 +30,7 @@ router.use((req: Request, res: Response, next) => {
   res.setHeader('Expires', '0');
 
   try {
+    db.syncIfModifiedOnDisk();
     const ckpt = extractVerifiedCheckpointFromRequest(req);
     if (ckpt && ckpt.userId) {
       db.reconcileVerifiedCheckpoint(ckpt);
@@ -360,6 +361,12 @@ router.get('/auth/google/session/:sid', (req: Request, res: Response): void => {
         serverTime: freshMiningState.serverTime,
       };
     }
+    if (entry.status === 'authenticated' && entry.data?.token) {
+      res.setHeader(
+        'Set-Cookie',
+        `coinpulse_session_token=${encodeURIComponent(entry.data.token)}; Path=/; Max-Age=2592000; HttpOnly; SameSite=None; Secure`
+      );
+    }
   }
 
   res.json({
@@ -625,7 +632,7 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
 
     res.setHeader(
       'Set-Cookie',
-      `coinpulse_session_token=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=None; Secure`
+      `coinpulse_session_token=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; HttpOnly; SameSite=None; Secure`
     );
 
     res.json(responsePayload);
@@ -644,6 +651,17 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
       error: `Google verification failed: ${err.message || 'Invalid Google credential'}`,
     });
   }
+});
+
+router.post('/auth/logout', (_req: Request, res: Response): void => {
+  res.setHeader(
+    'Set-Cookie',
+    'coinpulse_session_token=; Path=/; Max-Age=0; HttpOnly; SameSite=None; Secure'
+  );
+  res.json({
+    success: true,
+    message: 'Signed out successfully.',
+  });
 });
 
 router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response): void => {

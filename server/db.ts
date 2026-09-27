@@ -36,6 +36,7 @@ class Database {
   private isSaving = false;
   private saveQueued = false;
   private saveSeq = 0;
+  private lastLoadedMtimeMs = 0;
 
   constructor() {
     this.data = this.load();
@@ -49,6 +50,8 @@ class Database {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
       if (fs.existsSync(DB_FILE)) {
+        const stat = fs.statSync(DB_FILE);
+        this.lastLoadedMtimeMs = stat.mtimeMs;
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw) as DatabaseSchema;
         // Basic schema integrity check
@@ -68,6 +71,18 @@ class Database {
     return JSON.parse(JSON.stringify(INITIAL_DB));
   }
 
+  public syncIfModifiedOnDisk(): void {
+    if (this.isSaving) return;
+    try {
+      if (fs.existsSync(DB_FILE)) {
+        const stat = fs.statSync(DB_FILE);
+        if (stat.mtimeMs !== this.lastLoadedMtimeMs) {
+          this.data = this.load();
+        }
+      }
+    } catch {}
+  }
+
   private save(): void {
     if (this.isSaving) {
       this.saveQueued = true;
@@ -82,6 +97,9 @@ class Database {
       const tmpFile = `${DB_FILE}.tmp.${process.pid}.${Date.now()}.${++this.saveSeq}`;
       fs.writeFileSync(tmpFile, JSON.stringify(this.data, null, 2), 'utf-8');
       fs.renameSync(tmpFile, DB_FILE);
+      try {
+        this.lastLoadedMtimeMs = fs.statSync(DB_FILE).mtimeMs;
+      } catch {}
     } catch (err) {
       console.error('Database write error:', err);
     } finally {
@@ -173,10 +191,11 @@ class Database {
     const nowIso = new Date().toISOString();
 
     if (!existingPrimary) {
-      const restoredId = 'usr_g_shahraiz774';
+      const restoredId = 'usr_g_b7d1e0d22f16c08b';
 
       this.data.users[restoredId] = {
         id: restoredId,
+        googleId: '110989942788351733924',
         username: 'mshahraiz774',
         email: primaryEmail,
         referralCode: 'MSHA774C',
@@ -349,6 +368,8 @@ class Database {
       if (!id) return false;
       return (
         id.startsWith('usr_test_') ||
+        id.startsWith('usr_bg_test_') ||
+        id.startsWith('usr_exp_test_') ||
         id.startsWith('usr_google_17') ||
         id.startsWith('usr_legacy_') ||
         id.startsWith('usr_cors_') ||
@@ -361,7 +382,9 @@ class Database {
       const lower = email.toLowerCase();
       return (
         (lower.endsWith('@pulse.internal') && lower !== 'admin@coinpulse.internal') ||
+        (lower.endsWith('@coinpulse.internal') && lower !== 'admin@coinpulse.internal') ||
         lower.startsWith('google_miner_17') ||
+        lower.startsWith('multiminer_17') ||
         lower.startsWith('det_miner_17') ||
         lower.startsWith('ckpt_miner_17') ||
         lower.startsWith('legacy_miner_17') ||

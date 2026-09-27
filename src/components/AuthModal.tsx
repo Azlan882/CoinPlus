@@ -10,6 +10,11 @@ declare global {
     CoinPulseNative?: {
       openExternalUrl?: (url: string) => boolean;
       consumePendingAuth?: () => string;
+      getPersistedToken?: () => string;
+      setPersistedToken?: (token: string) => void;
+      getPersistedCheckpoint?: () => string;
+      setPersistedCheckpoint?: (ckpt: string) => void;
+      clearPersistedSession?: () => void;
     };
     __COINPULSE_DEEP_LINK_AUTH__?: {
       token?: string;
@@ -184,6 +189,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     if (!sessionToken || completedRef.current) return;
     setIsLoading(true);
     setError(null);
+    api.setToken(sessionToken);
     try {
       if (sid) {
         try {
@@ -194,16 +200,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           }
         } catch {}
       }
-      api.setToken(sessionToken);
-      const [meRes, statusRes] = await Promise.all([api.getMe(), api.getMiningStatus()]);
+      const meRes = await api.getMe();
+      const statusRes: MiningStatusResponse =
+        meRes.miningState || (await api.getMiningStatus());
       completeWithVerifiedSession({
         token: sessionToken,
+        stateCheckpoint: meRes.stateCheckpoint || statusRes?.stateCheckpoint,
         user: meRes.user,
         balance: meRes.balance,
         miningState: statusRes,
       });
     } catch (err: any) {
-      api.setToken(null);
+      if (err?.status === 401 || err?.status === 403) {
+        api.setToken(null);
+      }
       setIsLoading(false);
       setError(err.message || 'Failed to restore authenticated session.');
     }

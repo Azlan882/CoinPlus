@@ -212,17 +212,62 @@ export function extractVerifiedCheckpointFromRequest(req: Request): StateCheckpo
   return null;
 }
 
-export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export function extractTokenFromRequest(req: Request): string | null {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ success: false, error: 'Unauthorized: Missing bearer token' });
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const bearer = authHeader.substring(7).trim();
+    if (bearer) return bearer;
+  }
+
+  const customTokenHeader = req.headers['x-coinpulse-token'];
+  if (typeof customTokenHeader === 'string' && customTokenHeader.trim()) {
+    return customTokenHeader.trim();
+  }
+
+  const cookieHeader = req.headers.cookie;
+  if (typeof cookieHeader === 'string' && cookieHeader.length > 0) {
+    const cookies = cookieHeader.split(';');
+    for (const part of cookies) {
+      const [rawKey, ...rawValParts] = part.trim().split('=');
+      if (rawKey === 'coinpulse_session_token') {
+        const rawVal = rawValParts.join('=').trim();
+        if (rawVal) {
+          try {
+            return decodeURIComponent(rawVal);
+          } catch {
+            return rawVal;
+          }
+        }
+      }
+    }
+  }
+
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token.trim() : '';
+  if (queryToken) {
+    return queryToken;
+  }
+
+  return null;
+}
+
+export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  const token = extractTokenFromRequest(req);
+  if (!token) {
+    res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Missing bearer token or session cookie',
+      code: 'AUTH_TOKEN_MISSING',
+    });
     return;
   }
 
-  const token = authHeader.substring(7).trim();
   const payload = verifyToken(token);
   if (!payload) {
-    res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired session token' });
+    res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Invalid or expired session token',
+      code: 'AUTH_TOKEN_INVALID',
+    });
     return;
   }
 

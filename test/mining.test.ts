@@ -474,12 +474,191 @@ async function runTests() {
   await test('Primary Google Miner Account: Restored balance (>= 0.36 CP, 3 completed cycles) and stable Google sub identity binding', () => {
     const primaryUser = db.getUserByEmail('m.shahraiz774@gmail.com');
     assert(primaryUser, 'Primary Google miner account must exist in database');
+    assert.strictEqual(primaryUser?.id, 'usr_g_b7d1e0d22f16c08b', 'Primary user ID must match canonical Google sub ID');
+    assert.strictEqual(primaryUser?.googleId, '110989942788351733924', 'Primary googleId must be preserved');
     const primaryBalance = db.getBalance(primaryUser!.id);
     const primaryMining = db.getMiningState(primaryUser!.id);
     assert(primaryBalance.totalBalance >= 0.36, `Expected >= 0.36 CP restored balance, got ${primaryBalance.totalBalance}`);
     assert(primaryMining.totalCyclesCompleted >= 3, `Expected >= 3 completed cycles, got ${primaryMining.totalCyclesCompleted}`);
     assert(db.verifyBalanceIntegrity(primaryUser!.id).isValid, 'Primary miner ledger checksum must be valid');
   });
+
+  // 17. Live Nginx + Express End-to-End Test of All 11 Android APK & Web Auth/Mining Cases
+  await test('Live HTTP Proxy (Cases 1-11): Android APK & Web GET /api/auth/me, single CORS header, Cookie + Bearer auth, Sign-out/Sign-in, and Mining', async () => {
+    const baseUrl = 'http://localhost:8080';
+    const apkOrigin = 'https://localhost';
+    const webOrigin = 'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app';
+
+    // Verify existing primary account on both Android APK origin and Web origin without modifying its balance
+    const primaryUser = db.getUserByEmail('m.shahraiz774@gmail.com')!;
+    const primaryToken = generateToken(primaryUser);
+
+    const apkMePrimary = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: {
+        Origin: apkOrigin,
+        Authorization: `Bearer ${primaryToken}`,
+        Accept: 'application/json',
+      },
+    });
+    assert.strictEqual(apkMePrimary.status, 200, 'Primary user GET /api/auth/me from APK origin must return 200');
+    const acaoHeader = apkMePrimary.headers.get('access-control-allow-origin');
+    assert.strictEqual(
+      acaoHeader,
+      apkOrigin,
+      `Expected single Access-Control-Allow-Origin: ${apkOrigin}, got: ${acaoHeader}`
+    );
+    const apkPrimaryBody: any = await apkMePrimary.json();
+    assert.strictEqual(apkPrimaryBody.user.id, 'usr_g_b7d1e0d22f16c08b');
+    assert(apkPrimaryBody.balance.totalBalance >= 0.36);
+
+    const webMePrimary = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: {
+        Origin: webOrigin,
+        Cookie: `coinpulse_session_token=${encodeURIComponent(primaryToken)}`,
+        Accept: 'application/json',
+      },
+    });
+    assert.strictEqual(webMePrimary.status, 200, 'Primary user GET /api/auth/me via Cookie on Web origin must return 200');
+    const webPrimaryBody: any = await webMePrimary.json();
+    assert.strictEqual(webPrimaryBody.user.id, apkPrimaryBody.user.id, 'Web and APK must resolve identical user record');
+    assert.strictEqual(webPrimaryBody.balance.totalBalance, apkPrimaryBody.balance.totalBalance, 'Web and APK must return identical balance');
+
+    // Now test Cases 1-11 on a dedicated lifecycle test user
+    const testSub = `gsub_lifecycle_${Date.now()}`;
+    const testUserId = `usr_lifecycle_${Date.now()}`;
+    const lifecycleUser: User = {
+      id: testUserId,
+      googleId: testSub,
+      username: `lcminer_${Date.now().toString().slice(-4)}`,
+      email: `lifecycle_miner_${Date.now()}@pulse.internal`,
+      referralCode: `LC_${Date.now().toString().slice(-4)}`,
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(lifecycleUser, 0.0);
+
+    // Case 1 & 2: Fresh Google login -> GET /api/auth/me immediately after login
+    let sessionToken = generateToken(lifecycleUser);
+    let sessionCkpt = generateStateCheckpoint(lifecycleUser.id)!;
+
+    const meRes1 = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: {
+        Origin: apkOrigin,
+        Authorization: `Bearer ${sessionToken}`,
+        'X-CoinPulse-Checkpoint': sessionCkpt,
+        Accept: 'application/json',
+      },
+    });
+    assert.strictEqual(meRes1.status, 200, 'Case 2: GET /api/auth/me immediately after login must return 200');
+    const meData1: any = await meRes1.json();
+    assert.strictEqual(meData1.success, true);
+    assert.strictEqual(meData1.user.id, lifecycleUser.id);
+
+    // Case 3, 4 & 5: Close APK -> Reopen APK -> GET /api/auth/me again
+    const meRes2 = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: {
+        Origin: apkOrigin,
+        Authorization: `Bearer ${sessionToken}`,
+        'X-CoinPulse-Checkpoint': meData1.stateCheckpoint || sessionCkpt,
+        Accept: 'application/json',
+      },
+    });
+    assert.strictEqual(meRes2.status, 200, 'Case 5: GET /api/auth/me after close & reopen APK must return 200');
+
+    // Case 6: Sign out -> Verify POST /api/auth/logout clears cookie & unauthenticated GET /api/auth/me returns 401
+    const logoutRes = await fetch(`${baseUrl}/api/auth/logout`, {
+      method: 'POST',
+      headers: { Origin: apkOrigin, Accept: 'application/json' },
+    });
+    assert.strictEqual(logoutRes.status, 200, 'Case 6: POST /api/auth/logout must return 200');
+
+    const unauthMeRes = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { Origin: apkOrigin, Accept: 'application/json' },
+    });
+    assert.strictEqual(unauthMeRes.status, 401, 'Case 6: Unauthenticated GET /api/auth/me must return 401');
+    assert.strictEqual(unauthMeRes.headers.get('access-control-allow-origin'), apkOrigin);
+    const unauthBody: any = await unauthMeRes.json();
+    assert.strictEqual(unauthBody.code, 'AUTH_TOKEN_MISSING');
+
+    // Case 7: Sign in again
+    sessionToken = generateToken(lifecycleUser);
+    const meResAfterRelogin = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: {
+        Origin: apkOrigin,
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: 'application/json',
+      },
+    });
+    assert.strictEqual(meResAfterRelogin.status, 200, 'Case 7: GET /api/auth/me after signing in again must return 200');
+
+    // Case 8: Start mining (POST /api/mine)
+    const mineRes1 = await fetch(`${baseUrl}/api/mine`, {
+      method: 'POST',
+      headers: {
+        Origin: apkOrigin,
+        Authorization: `Bearer ${sessionToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ clientTimestamp: Date.now() }),
+    });
+    assert.strictEqual(mineRes1.status, 200, 'Case 8: POST /api/mine must return 200');
+    const mineData1: any = await mineRes1.json();
+    assert.strictEqual(mineData1.newBalance, 0.12);
+    assert.strictEqual(mineData1.sessionNumber, 1);
+
+    // Case 9 & 10: Complete mining cycle -> GET /api/auth/me again
+    db.syncIfModifiedOnDisk();
+    const expiredTime = Date.now() - 5000;
+    db.updateMiningState(lifecycleUser.id, {
+      currentCycleStartTime: expiredTime - 3600 * 1000,
+      lastMinedAt: expiredTime - 3600 * 1000,
+      nextMiningAvailableAt: expiredTime,
+      isMiningActive: true,
+    });
+    const ckptAfterCycle = generateStateCheckpoint(lifecycleUser.id)!;
+
+    const meResAfterCycle = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: {
+        Origin: apkOrigin,
+        Authorization: `Bearer ${sessionToken}`,
+        'X-CoinPulse-Checkpoint': ckptAfterCycle,
+        Accept: 'application/json',
+      },
+    });
+    assert.strictEqual(meResAfterCycle.status, 200, 'Case 10: GET /api/auth/me after completing cycle must return 200');
+    const meDataAfterCycle: any = await meResAfterCycle.json();
+    assert.strictEqual(meDataAfterCycle.miningState.status, 'available');
+    assert.strictEqual(meDataAfterCycle.miningState.remainingSeconds, 0);
+    assert.strictEqual(meDataAfterCycle.balance.totalBalance, 0.12);
+
+    // Case 11: Minimize/reopen app & claim next cycle
+    const mineRes2 = await fetch(`${baseUrl}/api/mine`, {
+      method: 'POST',
+      headers: {
+        Origin: apkOrigin,
+        Authorization: `Bearer ${sessionToken}`,
+        'X-CoinPulse-Checkpoint': meDataAfterCycle.stateCheckpoint,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ clientTimestamp: Date.now() }),
+    });
+    assert.strictEqual(mineRes2.status, 200, 'Case 11: Second mining cycle after reopen must return 200');
+    const mineData2: any = await mineRes2.json();
+    assert.strictEqual(mineData2.newBalance, 0.24);
+    assert.strictEqual(mineData2.sessionNumber, 2);
+  });
+
+  // Clean up all temporary test users so only real accounts remain in /data/coinpulse_database.json
+  db.cleanupTestArtifacts(true);
 
   console.log(`\n========================================`);
   console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
