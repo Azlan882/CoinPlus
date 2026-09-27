@@ -46,7 +46,7 @@ async function startServer() {
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization, X-CoinPulse-Checkpoint, Accept, Cache-Control, Pragma'
     );
-    res.setHeader('Access-Control-Expose-Headers', 'X-CoinPulse-Checkpoint');
+    res.setHeader('Access-Control-Expose-Headers', 'X-CoinPulse-Checkpoint, X-CoinPulse-Warmup');
     res.setHeader('Access-Control-Max-Age', '86400');
 
     if (req.method === 'OPTIONS') {
@@ -434,6 +434,23 @@ async function startServer() {
     console.log(
       `CoinPulse full-stack server running on http://0.0.0.0:${PORT} (hasGoogleClientId=${hasGoogleClientIdConfigured()})`
     );
+
+    // Periodic container keep-alive & Nginx verification so 1-hour mining cycles never hit a cold/unpatched gateway
+    const publicAppUrl = (
+      process.env.APP_URL ||
+      'https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app'
+    ).replace(/\/+$/, '');
+    const keepAliveTimer = setInterval(() => {
+      try {
+        setupContainerNginx();
+      } catch {}
+      fetch(`${publicAppUrl}/api/health`, {
+        headers: { Accept: 'application/json' },
+      }).catch(() => {});
+    }, 150_000);
+    if (typeof keepAliveTimer.unref === 'function') {
+      keepAliveTimer.unref();
+    }
   });
 }
 

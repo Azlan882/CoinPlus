@@ -110,7 +110,9 @@ export default function App() {
     try {
       setIsRefreshing(true);
       lastSyncAtRef.current = Date.now();
-      const [meRes, statusRes] = await Promise.all([api.getMe(), api.getMiningStatus()]);
+      const meRes = await api.getMe();
+      const statusRes: MiningStatusResponse =
+        meRes.miningState || (await api.getMiningStatus());
       const nextBalance: BalanceState = {
         balance: meRes.balance.totalBalance,
         totalMined: meRes.balance.totalMined,
@@ -400,6 +402,16 @@ export default function App() {
       const nextRemaining = computeRemainingFromStatus(statusObj);
       setRemainingSeconds(nextRemaining);
 
+      // Keep backend container warm during 1-hour mining cycles and pre-warm 15s before cycle completion
+      if (
+        nextRemaining > 0 &&
+        (nextRemaining === 15 || nextRemaining % 180 === 0) &&
+        Date.now() - lastSyncAtRef.current > 30_000
+      ) {
+        lastSyncAtRef.current = Date.now();
+        api.getMiningStatus().catch(() => {});
+      }
+
       if (nextRemaining === 0 && statusObj.nextMiningAvailableAt > 0 && !cooldownCompletionSyncedRef.current) {
         cooldownCompletionSyncedRef.current = true;
         // Cooldown finished: re-sync with server to confirm authoritative 'available' status
@@ -482,13 +494,16 @@ export default function App() {
         'success'
       );
 
-      // Re-sync all states with server in background
-      syncServerData();
       if (currentTab === 'team') {
         fetchReferrals();
       }
     } catch (err: any) {
       sounds.playCooldownBuzz();
+      console.warn('[CoinPulse Mine Error]', {
+        status: err?.status,
+        endpoint: err?.endpoint || '/api/mine',
+        message: err?.message,
+      });
       if (err?.data?.miningState) {
         applyAuthoritativeMiningStatus(err.data.miningState);
       } else {

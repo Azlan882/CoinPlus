@@ -41,6 +41,14 @@ router.use((req: Request, res: Response, next) => {
   next();
 });
 
+router.get('/health', (_req: Request, res: Response): void => {
+  res.json({
+    success: true,
+    status: 'ok',
+    serverTime: Date.now(),
+  });
+});
+
 function buildAuthoritativeMiningStatus(user: User) {
   const freshUser = db.getUserById(user.id) || user;
   const miningState = db.getMiningState(freshUser.id);
@@ -671,39 +679,54 @@ router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response): 
 // -------------------------------------------------------------
 
 router.post('/mine', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  const user = req.user!;
-  const clientIp = req.ip || req.socket.remoteAddress || '127.0.0.1';
-  const userAgent = (req.headers['user-agent'] as string) || '';
+  try {
+    const user = db.getUserById(req.user!.id) || req.user!;
+    const clientIp = req.ip || req.socket.remoteAddress || '127.0.0.1';
+    const userAgent = (req.headers['user-agent'] as string) || '';
 
-  const result = await processMineRequest(user, clientIp, userAgent);
+    const result = await processMineRequest(user, clientIp, userAgent);
 
-  if (!result.success) {
+    if (!result.success) {
+      const miningState = buildAuthoritativeMiningStatus(user);
+      if (miningState.stateCheckpoint) {
+        res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
+      }
+      console.warn(
+        `[MiningAPI] POST /api/mine -> HTTP ${result.status} for user=${user.id} (cycles=${miningState.totalCyclesCompleted}): ${result.error}`
+      );
+      res.status(result.status).json({
+        success: false,
+        error: result.error,
+        remainingSeconds: result.remainingSeconds,
+        miningState,
+        stateCheckpoint: miningState.stateCheckpoint,
+        serverTime: miningState.serverTime,
+      });
+      return;
+    }
+
     const miningState = buildAuthoritativeMiningStatus(user);
     if (miningState.stateCheckpoint) {
       res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
     }
-    res.status(result.status).json({
-      success: false,
-      error: result.error,
-      remainingSeconds: result.remainingSeconds,
+    console.log(
+      `[MiningAPI] POST /api/mine -> HTTP 200 for user=${user.id} cycle=#${result.data?.sessionNumber} newBalance=${result.data?.newBalance}`
+    );
+    res.status(200).json({
+      success: true,
+      ...result.data,
       miningState,
       stateCheckpoint: miningState.stateCheckpoint,
       serverTime: miningState.serverTime,
     });
-    return;
+  } catch (err: any) {
+    console.error('[MiningAPI] Unexpected error in POST /api/mine:', err);
+    res.status(500).json({
+      success: false,
+      error: err?.message || 'Internal server error while processing mining cycle.',
+      serverTime: Date.now(),
+    });
   }
-
-  const miningState = buildAuthoritativeMiningStatus(user);
-  if (miningState.stateCheckpoint) {
-    res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
-  }
-  res.status(200).json({
-    success: true,
-    ...result.data,
-    miningState,
-    stateCheckpoint: miningState.stateCheckpoint,
-    serverTime: miningState.serverTime,
-  });
 });
 
 router.get('/mining/status', requireAuth, (req: AuthenticatedRequest, res: Response): void => {

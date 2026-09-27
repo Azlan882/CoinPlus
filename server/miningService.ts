@@ -75,7 +75,7 @@ export async function processMineRequest(
 
     // Credit amount = 1 hour's mining rate
     const rewardAmount = Number(currentRate.toFixed(6));
-    const sessionId = `ses_${Date.now()}_${user.id.slice(-6)}`;
+    const sessionId = `ses_${Date.now()}_${sessionNumber}_${user.id.slice(-6)}`;
 
     // Add balance and audit transaction record
     const { balance } = db.addBalanceTransaction(

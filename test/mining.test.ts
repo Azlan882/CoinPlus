@@ -362,8 +362,8 @@ async function runTests() {
     assert.strictEqual(balanceA.totalBalance, db.getBalance(userA.id).totalBalance, 'Both devices must see identical balance');
   });
 
-  // 13. Multi-Cycle Continuity (First Mine -> Complete 1st Cycle -> Second Mine -> Third Mine + Checkpoint Recovery)
-  await test('Multi-Cycle & Checkpoint Continuity: 1st, 2nd, and 3rd hourly cycles succeed even across container restarts', async () => {
+  // 13. Multi-Cycle Continuity (Cycles 1, 2, 3, 4, and 5 + Checkpoint Recovery & Reopen/Re-Auth)
+  await test('Multi-Cycle & Checkpoint Continuity: Cycles 1, 2, 3, 4, and 5 succeed without limit across restarts, reopen, and re-login', async () => {
     const googleSub = `google_multicycle_${Date.now()}`;
     const deterministicId = deriveDeterministicUserId(googleSub);
     const cycleUser: User = {
@@ -433,17 +433,51 @@ async function runTests() {
     assert(cycle3.success, '3rd mining cycle must succeed');
     assert.strictEqual(cycle3.data?.sessionNumber, 3, 'Session number must be 3');
     assert.strictEqual(cycle3.data?.newBalance, 0.36, 'Balance after 3rd cycle must be 0.36 CP');
-    assert(db.verifyBalanceIntegrity(cycleUser.id).isValid, 'Ledger integrity must remain valid across all 3 cycles');
+
+    // Simulate 1-hour cooldown completion for Cycle 3 + cold-start checkpoint restore
+    const pastEnd3 = Date.now() - 5000;
+    db.updateMiningState(cycleUser.id, {
+      currentCycleStartTime: pastEnd3 - 3600 * 1000,
+      lastMinedAt: pastEnd3 - 3600 * 1000,
+      nextMiningAvailableAt: pastEnd3,
+      isMiningActive: true,
+    });
+    const ckptReadyForCycle4 = generateStateCheckpoint(cycleUser.id)!;
+    const reconciledForCycle4 = db.reconcileVerifiedCheckpoint(verifyStateCheckpoint(ckptReadyForCycle4)!);
+
+    // Cycle 4: Fourth Mine (critical cycle reported by user)
+    const cycle4 = await processMineRequest(reconciledForCycle4, '127.0.0.1', 'CoinPulse-APK/1.0');
+    assert(cycle4.success, '4th mining cycle must succeed');
+    assert.strictEqual(cycle4.data?.sessionNumber, 4, 'Session number must be 4');
+    assert.strictEqual(cycle4.data?.newBalance, 0.48, 'Balance after 4th cycle must be 0.48 CP');
+
+    // Simulate sign-out & sign-back-in via bindGoogleIdentity + 1-hour cooldown completion for Cycle 4
+    const reSignedInUser = db.bindGoogleIdentity(cycleUser.id, googleSub, deterministicId)!;
+    assert.strictEqual(reSignedInUser.id, cycleUser.id, 'Re-login with Google must preserve user ID');
+    const pastEnd4 = Date.now() - 5000;
+    db.updateMiningState(reSignedInUser.id, {
+      currentCycleStartTime: pastEnd4 - 3600 * 1000,
+      lastMinedAt: pastEnd4 - 3600 * 1000,
+      nextMiningAvailableAt: pastEnd4,
+      isMiningActive: true,
+    });
+
+    // Cycle 5: Fifth Mine
+    const cycle5 = await processMineRequest(reSignedInUser, '127.0.0.1', 'CoinPulse-APK/1.0');
+    assert(cycle5.success, '5th mining cycle must succeed');
+    assert.strictEqual(cycle5.data?.sessionNumber, 5, 'Session number must be 5');
+    assert.strictEqual(cycle5.data?.newBalance, 0.60, 'Balance after 5th cycle must be 0.60 CP');
+    assert(db.verifyBalanceIntegrity(cycleUser.id).isValid, 'Ledger integrity must remain valid across all 5 cycles');
   });
 
   // 16. Primary Miner Account Continuity & Google Sub Identity Binding
-  await test('Primary Google Miner Account: Restored balance (0.24 CP) and stable Google sub identity binding', () => {
+  await test('Primary Google Miner Account: Restored balance (>= 0.36 CP, 3 completed cycles) and stable Google sub identity binding', () => {
     const primaryUser = db.getUserByEmail('m.shahraiz774@gmail.com');
     assert(primaryUser, 'Primary Google miner account must exist in database');
     const primaryBalance = db.getBalance(primaryUser!.id);
     const primaryMining = db.getMiningState(primaryUser!.id);
-    assert(primaryBalance.totalBalance >= 0.24, `Expected >= 0.24 CP restored balance, got ${primaryBalance.totalBalance}`);
-    assert(primaryMining.totalCyclesCompleted >= 2, `Expected >= 2 completed cycles, got ${primaryMining.totalCyclesCompleted}`);
+    assert(primaryBalance.totalBalance >= 0.36, `Expected >= 0.36 CP restored balance, got ${primaryBalance.totalBalance}`);
+    assert(primaryMining.totalCyclesCompleted >= 3, `Expected >= 3 completed cycles, got ${primaryMining.totalCyclesCompleted}`);
     assert(db.verifyBalanceIntegrity(primaryUser!.id).isValid, 'Primary miner ledger checksum must be valid');
   });
 

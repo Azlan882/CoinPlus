@@ -236,6 +236,9 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
   if (!user && payload.email) {
     user = db.getUserByEmail(payload.email);
   }
+  if (!user && payload.username) {
+    user = db.getUserByUsername(payload.username);
+  }
 
   if (user && payload.googleId && (user.id !== payload.userId || user.googleId !== payload.googleId)) {
     user = db.bindGoogleIdentity(user.id, payload.googleId, payload.userId, payload.picture) || user;

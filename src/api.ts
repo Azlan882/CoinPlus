@@ -22,6 +22,8 @@ declare const __COINPULSE_APP_URL__: string | undefined;
 
 export interface ApiError extends Error {
   status?: number;
+  endpoint?: string;
+  serverMessage?: string;
   data?: any;
 }
 
@@ -224,13 +226,15 @@ class ApiService {
     const baseUrl = getApiBaseUrl();
     const isAbsolute = endpoint.startsWith('http');
     const primaryUrl = isAbsolute ? endpoint : `${baseUrl}${endpoint}`;
+    const method = (options.method || 'GET').toUpperCase();
+    const cleanEndpoint = endpoint.split('?')[0] || endpoint;
 
     let response: Response | null = null;
     let rawText = '';
     let lastNetworkError: any = null;
 
-    // Up to 4 attempts to handle stale Android WebView keep-alive sockets after 1h idle or Cloud Run cold-start warmup
-    const maxAttempts = 4;
+    // Up to 8 attempts to handle stale Android WebView keep-alive sockets after 1h idle or Cloud Run cold-start warmup
+    const maxAttempts = 8;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         response = await fetch(primaryUrl, {
@@ -247,28 +251,37 @@ class ApiService {
           response.status === 502 ||
           response.status === 503 ||
           response.status === 504 ||
-          (response.redirected && response.url.includes('__aistudio_auth_bridge')) ||
+          (response.redirected &&
+            (response.url.includes('__aistudio_auth_bridge') || response.url.includes('__cookie_check'))) ||
           trimmed.includes('__aistudio_auth_bridge') ||
-          (trimmed.startsWith('<') && trimmed.includes('Starting Server'));
+          (trimmed.startsWith('<') &&
+            (trimmed.includes('Please wait while your application starts') ||
+              trimmed.includes('Starting Server') ||
+              trimmed.includes('<title>Cookie check</title>')));
 
         if (isWarmupOrBridgeHtml && attempt < maxAttempts) {
-          await sleep(650 * attempt);
+          await sleep(Math.min(2500, 500 * attempt));
           continue;
         }
 
         break;
       } catch (fetchErr: any) {
         lastNetworkError = fetchErr;
+        response = null;
         if (attempt < maxAttempts) {
-          await sleep(500 * attempt);
+          await sleep(Math.min(2000, 450 * attempt));
           continue;
         }
       }
     }
 
     if (!response) {
-      console.error(`[CoinPulse API] Network failure on ${options.method || 'GET'} ${primaryUrl}:`, lastNetworkError);
-      throw new Error('Network connection issue. Please check your internet connection.');
+      const safeErrDetail =
+        lastNetworkError && typeof lastNetworkError.message === 'string'
+          ? lastNetworkError.message
+          : 'Unreachable host';
+      console.error(`[CoinPulse API] Network failure on ${method} ${cleanEndpoint} (${ safeErrDetail })`);
+      throw new Error(`Network connection failed. Check your network. (${method} ${cleanEndpoint})`);
     }
 
     let data: any = null;
@@ -285,7 +298,7 @@ class ApiService {
     if (!response.ok) {
       if (
         response.status === 401 &&
-        !endpoint.startsWith('/api/auth/google') &&
+        !cleanEndpoint.startsWith('/api/auth/google') &&
         data &&
         typeof data === 'object' &&
         data.success === false
@@ -298,18 +311,25 @@ class ApiService {
         (data && typeof data.error === 'string' && data.error) ||
         (data && typeof data.message === 'string' && data.message) ||
         `Server returned HTTP ${response.status}`;
+      const formattedHttpError = `${serverMessage} [HTTP ${response.status} ${cleanEndpoint}]`;
       console.warn(
-        `[CoinPulse API] HTTP ${response.status} on ${options.method || 'GET'} ${endpoint}:`,
-        serverMessage
+        `[CoinPulse API] HTTP ${response.status} on ${method} ${cleanEndpoint}: ${serverMessage}`
       );
-      const apiErr: ApiError = new Error(serverMessage);
+      const apiErr: ApiError = new Error(formattedHttpError);
       apiErr.status = response.status;
+      apiErr.endpoint = cleanEndpoint;
+      apiErr.serverMessage = serverMessage;
       apiErr.data = data;
       throw apiErr;
     }
 
     if (!data || typeof data !== 'object') {
-      throw new Error(`Server is warming up or returned non-JSON response (HTTP ${response.status}). Please retry in a moment.`);
+      const nonJsonMsg = `Server is warming up or returned non-JSON response [HTTP ${response.status} ${cleanEndpoint}]. Please retry in a moment.`;
+      console.warn(`[CoinPulse API] Non-JSON response on ${method} ${cleanEndpoint} (HTTP ${response.status})`);
+      const nonJsonErr: ApiError = new Error(nonJsonMsg);
+      nonJsonErr.status = response.status;
+      nonJsonErr.endpoint = cleanEndpoint;
+      throw nonJsonErr;
     }
 
     return data as T;
