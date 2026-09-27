@@ -436,6 +436,17 @@ async function runTests() {
     assert(db.verifyBalanceIntegrity(cycleUser.id).isValid, 'Ledger integrity must remain valid across all 3 cycles');
   });
 
+  // 16. Primary Miner Account Continuity & Google Sub Identity Binding
+  await test('Primary Google Miner Account: Restored balance (0.24 CP) and stable Google sub identity binding', () => {
+    const primaryUser = db.getUserByEmail('m.shahraiz774@gmail.com');
+    assert(primaryUser, 'Primary Google miner account must exist in database');
+    const primaryBalance = db.getBalance(primaryUser!.id);
+    const primaryMining = db.getMiningState(primaryUser!.id);
+    assert(primaryBalance.totalBalance >= 0.24, `Expected >= 0.24 CP restored balance, got ${primaryBalance.totalBalance}`);
+    assert(primaryMining.totalCyclesCompleted >= 2, `Expected >= 2 completed cycles, got ${primaryMining.totalCyclesCompleted}`);
+    assert(db.verifyBalanceIntegrity(primaryUser!.id).isValid, 'Primary miner ledger checksum must be valid');
+  });
+
   console.log(`\n========================================`);
   console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
   console.log(`========================================\n`);

@@ -26,9 +26,12 @@ import { AlertCircle, WifiOff } from 'lucide-react';
 import { sounds } from './utils/audio.ts';
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [balance, setBalance] = useState<BalanceState | null>(null);
-  const [miningStatus, setMiningStatus] = useState<MiningStatusResponse | null>(null);
+  const initialCached = api.getToken() ? api.getCachedSession() : null;
+  const [currentUser, setCurrentUser] = useState<User | null>(initialCached?.user ?? null);
+  const [balance, setBalance] = useState<BalanceState | null>(initialCached?.balance ?? null);
+  const [miningStatus, setMiningStatus] = useState<MiningStatusResponse | null>(
+    initialCached?.miningState ?? null
+  );
   const [referralsData, setReferralsData] = useState<ReferralsResponse | null>(null);
 
   const [currentTab, setCurrentTab] = useState<TabType>('mining');
@@ -108,18 +111,60 @@ export default function App() {
       setIsRefreshing(true);
       lastSyncAtRef.current = Date.now();
       const [meRes, statusRes] = await Promise.all([api.getMe(), api.getMiningStatus()]);
-      setCurrentUser(meRes.user);
-      setBalance({
+      const nextBalance: BalanceState = {
         balance: meRes.balance.totalBalance,
         totalMined: meRes.balance.totalMined,
         totalReferralBonus: meRes.balance.totalReferralBonus,
         lastCalculatedAt: meRes.balance.lastCalculatedAt,
         integrityVerified: true,
-      });
+      };
+      setCurrentUser(meRes.user);
+      setBalance(nextBalance);
       applyAuthoritativeMiningStatus(statusRes);
+      api.setCachedSession({
+        user: meRes.user,
+        balance: nextBalance,
+        miningState: statusRes,
+        updatedAt: Date.now(),
+      });
       setResumeSyncTick((t) => t + 1);
     } catch (err: any) {
       console.error('Data sync failed:', err);
+      if (err?.status === 401 && !api.getToken()) {
+        setCurrentUser(null);
+        setBalance(null);
+        applyAuthoritativeMiningStatus(null);
+        setIsAuthOpen(true);
+      } else {
+        // Transient cold-start or network issue: preserve current/cached session and retry in background
+        window.setTimeout(() => {
+          if (api.getToken()) {
+            api
+              .getMe()
+              .then((meRes) => {
+                const nextBal: BalanceState = {
+                  balance: meRes.balance.totalBalance,
+                  totalMined: meRes.balance.totalMined,
+                  totalReferralBonus: meRes.balance.totalReferralBonus,
+                  lastCalculatedAt: meRes.balance.lastCalculatedAt,
+                  integrityVerified: true,
+                };
+                setCurrentUser(meRes.user);
+                setBalance(nextBal);
+                if (meRes.miningState) {
+                  applyAuthoritativeMiningStatus(meRes.miningState);
+                }
+                api.setCachedSession({
+                  user: meRes.user,
+                  balance: nextBal,
+                  miningState: meRes.miningState || miningStatusRef.current,
+                  updatedAt: Date.now(),
+                });
+              })
+              .catch(() => {});
+          }
+        }, 2500);
+      }
     } finally {
       setIsRefreshing(false);
     }
@@ -167,6 +212,9 @@ export default function App() {
     }
 
     // Check if Android MainActivity injected a deep-link token before React mounted
+    if (window.__COINPULSE_DEEP_LINK_AUTH__?.ckpt) {
+      api.setCheckpoint(window.__COINPULSE_DEEP_LINK_AUTH__.ckpt);
+    }
     if (window.__COINPULSE_DEEP_LINK_AUTH__?.token) {
       api.setToken(window.__COINPULSE_DEEP_LINK_AUTH__.token);
       window.__COINPULSE_DEEP_LINK_AUTH__ = undefined;
@@ -175,6 +223,9 @@ export default function App() {
         const raw = window.CoinPulseNative.consumePendingAuth();
         if (raw) {
           const parsed = JSON.parse(raw);
+          if (parsed?.ckpt) {
+            api.setCheckpoint(parsed.ckpt);
+          }
           if (parsed?.token) {
             api.setToken(parsed.token);
           }
@@ -185,6 +236,9 @@ export default function App() {
     const handleDeepLinkAuth = (event: Event) => {
       const customEv = event as CustomEvent;
       const detail = customEv.detail || window.__COINPULSE_DEEP_LINK_AUTH__ || {};
+      if (detail.ckpt) {
+        api.setCheckpoint(detail.ckpt);
+      }
       if (detail.token) {
         api.setToken(detail.token);
         setIsAuthOpen(false);
@@ -296,6 +350,14 @@ export default function App() {
           setIsAuthOpen(true);
         });
     } else if (api.getToken()) {
+      const cached = api.getCachedSession();
+      if (cached?.user) {
+        setCurrentUser(cached.user);
+        setBalance(cached.balance);
+        if (cached.miningState) {
+          applyAuthoritativeMiningStatus(cached.miningState);
+        }
+      }
       setIsAuthOpen(false);
       syncServerData();
     } else {
@@ -374,18 +436,21 @@ export default function App() {
 
       // Immediately apply authoritative server timestamps and balance from /api/mine response
       updateServerClockOffset(res.serverTime);
-      setBalance((prev) => ({
+      const nextBalance: BalanceState = {
         balance: res.newBalance,
         totalMined: res.totalMined,
-        totalReferralBonus: prev?.totalReferralBonus ?? 0,
+        totalReferralBonus: balance?.totalReferralBonus ?? 0,
         lastCalculatedAt: new Date(res.serverTime || Date.now()).toISOString(),
         integrityVerified: true,
-      }));
+      };
+      setBalance(nextBalance);
 
+      let effectiveStatus: MiningStatusResponse;
       if (res.miningState) {
+        effectiveStatus = res.miningState;
         applyAuthoritativeMiningStatus(res.miningState);
       } else {
-        const nextStatus: MiningStatusResponse = {
+        effectiveStatus = {
           success: true,
           status: 'mining',
           isCooldownActive: true,
@@ -400,8 +465,14 @@ export default function App() {
           activeReferralsCount: miningStatus?.activeReferralsCount ?? 0,
           serverTime: res.serverTime || Date.now(),
         };
-        applyAuthoritativeMiningStatus(nextStatus);
+        applyAuthoritativeMiningStatus(effectiveStatus);
       }
+      api.setCachedSession({
+        user: currentUser,
+        balance: nextBalance,
+        miningState: effectiveStatus,
+        updatedAt: Date.now(),
+      });
       setResumeSyncTick((t) => t + 1);
 
       showNotification(

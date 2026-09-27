@@ -186,6 +186,32 @@ export function sanitizeUser(user: User): Omit<User, 'passwordHash' | 'salt'> {
   return safeUser;
 }
 
+export function extractVerifiedCheckpointFromRequest(req: Request): StateCheckpointPayload | null {
+  const rawHeader = req.headers['x-coinpulse-checkpoint'];
+  const headerStr = typeof rawHeader === 'string' ? rawHeader.trim() : '';
+  if (headerStr) {
+    const verified = verifyStateCheckpoint(headerStr);
+    if (verified) return verified;
+  }
+
+  const bodyCkpt =
+    req.body && typeof req.body === 'object' && typeof req.body.stateCheckpoint === 'string'
+      ? req.body.stateCheckpoint.trim()
+      : '';
+  if (bodyCkpt) {
+    const verified = verifyStateCheckpoint(bodyCkpt);
+    if (verified) return verified;
+  }
+
+  const queryCkpt = typeof req.query?.ckpt === 'string' ? req.query.ckpt.trim() : '';
+  if (queryCkpt) {
+    const verified = verifyStateCheckpoint(queryCkpt);
+    if (verified) return verified;
+  }
+
+  return null;
+}
+
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -200,10 +226,8 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     return;
   }
 
-  // Check if client supplied a server-signed HMAC state checkpoint header
-  const rawCheckpoint = req.headers['x-coinpulse-checkpoint'];
-  const checkpointStr = typeof rawCheckpoint === 'string' ? rawCheckpoint.trim() : '';
-  const verifiedCheckpoint = checkpointStr ? verifyStateCheckpoint(checkpointStr) : null;
+  // Check if client supplied a server-signed HMAC state checkpoint header/body/query
+  const verifiedCheckpoint = extractVerifiedCheckpointFromRequest(req);
 
   let user = db.getUserById(payload.userId);
   if (!user && payload.googleId) {
@@ -211,6 +235,15 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
   }
   if (!user && payload.email) {
     user = db.getUserByEmail(payload.email);
+  }
+
+  if (user && payload.googleId && (user.id !== payload.userId || user.googleId !== payload.googleId)) {
+    user = db.bindGoogleIdentity(user.id, payload.googleId, payload.userId, payload.picture) || user;
+  } else if (user && payload.email && payload.googleId) {
+    const emailRecord = db.getUserByEmail(payload.email);
+    if (emailRecord && emailRecord.id !== user.id) {
+      user = db.bindGoogleIdentity(emailRecord.id, payload.googleId, payload.userId, payload.picture) || user;
+    }
   }
 
   // Reconcile from verified server-signed checkpoint if present and matches user

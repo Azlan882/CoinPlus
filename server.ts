@@ -205,10 +205,11 @@ async function startServer() {
               parsedState.origin.indexOf('capacitor://') !== -1)) ||
           /Android/i.test(navigator.userAgent || '');
 
-        function buildDeepLink(sessionToken, errorMsg, useIntentScheme) {
+        function buildDeepLink(sessionToken, errorMsg, useIntentScheme, stateCheckpoint) {
           var params = new URLSearchParams();
           if (sessionToken) params.set('token', sessionToken);
           if (parsedState.sid) params.set('sid', parsedState.sid);
+          if (stateCheckpoint) params.set('ckpt', stateCheckpoint);
           if (errorMsg) params.set('error', errorMsg);
           var qs = params.toString();
           if (useIntentScheme) {
@@ -260,13 +261,13 @@ async function startServer() {
           }
         }
 
-        function closeOrReturn(sessionToken, errorMsg, preferIntent) {
+        function closeOrReturn(sessionToken, errorMsg, preferIntent, stateCheckpoint) {
           if (isCapacitorOrAndroid) {
-            var deepLink = buildDeepLink(sessionToken, errorMsg, Boolean(preferIntent));
+            var deepLink = buildDeepLink(sessionToken, errorMsg, Boolean(preferIntent), stateCheckpoint);
             window.location.href = deepLink;
             if (!preferIntent) {
               setTimeout(function() {
-                window.location.href = buildDeepLink(sessionToken, errorMsg, true);
+                window.location.href = buildDeepLink(sessionToken, errorMsg, true, stateCheckpoint);
               }, 500);
             }
             return;
@@ -311,14 +312,25 @@ async function startServer() {
           return;
         }
 
+        var existingCkpt = '';
+        try {
+          existingCkpt = localStorage.getItem('coinpulse_state_checkpoint') || '';
+        } catch (e) {}
+
+        var reqHeaders = { 'Content-Type': 'application/json' };
+        if (existingCkpt) {
+          reqHeaders['X-CoinPulse-Checkpoint'] = existingCkpt;
+        }
+
         // Verify the Google credential directly with the CoinPulse backend to create the authenticated session
         fetch('/api/auth/google', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: reqHeaders,
           body: JSON.stringify({
             token: idToken,
             referralCode: parsedState.ref || undefined,
-            authSessionId: parsedState.sid || undefined
+            authSessionId: parsedState.sid || undefined,
+            stateCheckpoint: existingCkpt || undefined
           })
         })
           .then(function(r) {
@@ -346,9 +358,12 @@ async function startServer() {
 
             var sessionData = result.data;
 
-            // Persist session token in localStorage for same-origin tabs
+            // Persist session token & checkpoint in localStorage for same-origin tabs
             try {
               localStorage.setItem('coinpulse_session_token', sessionData.token);
+              if (sessionData.stateCheckpoint) {
+                localStorage.setItem('coinpulse_state_checkpoint', sessionData.stateCheckpoint);
+              }
             } catch (e) {}
 
             // Notify main CoinPulse app across all channels
@@ -365,11 +380,11 @@ async function startServer() {
               'Signed In as ' + username,
               'Your CoinPulse account is now active. Returning to the app automatically...',
               isCapacitorOrAndroid ? 'Open CoinPulse App' : 'Close Window',
-              function() { closeOrReturn(sessionData.token, '', true); }
+              function() { closeOrReturn(sessionData.token, '', true, sessionData.stateCheckpoint); }
             );
 
             setTimeout(function() {
-              closeOrReturn(sessionData.token, '', false);
+              closeOrReturn(sessionData.token, '', false, sessionData.stateCheckpoint);
             }, 250);
           })
           .catch(function(err) {

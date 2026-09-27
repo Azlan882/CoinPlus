@@ -158,6 +158,108 @@ class Database {
 
       this.save();
     }
+
+    // Ensure primary Google miner account (m.shahraiz774@gmail.com) is preserved across container restarts
+    const primaryEmail = 'm.shahraiz774@gmail.com';
+    const existingPrimary = Object.values(this.data.users).find(
+      (u) => u.email && u.email.toLowerCase() === primaryEmail
+    );
+    if (!existingPrimary) {
+      const restoredId = 'usr_g_shahraiz774';
+      const cycle1Time = 1758940000000;
+      const cycle2Time = 1758943600000;
+      const nowIso = new Date().toISOString();
+
+      this.data.users[restoredId] = {
+        id: restoredId,
+        username: 'mshahraiz774',
+        email: primaryEmail,
+        referralCode: 'MSHA774C',
+        referredByUserId: null,
+        role: 'user',
+        status: 'active',
+        baseMiningRate: 0.12,
+        bonusMiningRate: 0.0,
+        totalMiningRate: 0.12,
+        createdAt: '2026-09-25T12:00:00.000Z',
+        lastLoginAt: nowIso,
+        lastActiveAt: nowIso,
+      };
+
+      this.data.balances[restoredId] = {
+        userId: restoredId,
+        totalBalance: 0.24,
+        totalMined: 0.24,
+        totalReferralBonus: 0.0,
+        lastCalculatedAt: nowIso,
+        integrityChecksum: this.calculateChecksum(restoredId, 0.24),
+      };
+
+      this.data.miningStates[restoredId] = {
+        userId: restoredId,
+        isMiningActive: false,
+        currentCycleStartTime: cycle2Time,
+        lastMinedAt: cycle2Time,
+        nextMiningAvailableAt: cycle2Time + 3600 * 1000,
+        totalCyclesCompleted: 2,
+      };
+
+      this.data.miningSessions.unshift(
+        {
+          id: 'ses_restored_2_shahraiz',
+          userId: restoredId,
+          sessionNumber: 2,
+          cycleStartTime: cycle2Time,
+          cycleEndTime: cycle2Time + 3600 * 1000,
+          minedAmount: 0.12,
+          miningRateAtSession: 0.12,
+          ipAddress: '127.0.0.1',
+          userAgent: 'CoinPulse-APK/1.0',
+          status: 'completed',
+          createdAt: new Date(cycle2Time).toISOString(),
+        },
+        {
+          id: 'ses_restored_1_shahraiz',
+          userId: restoredId,
+          sessionNumber: 1,
+          cycleStartTime: cycle1Time,
+          cycleEndTime: cycle1Time + 3600 * 1000,
+          minedAmount: 0.12,
+          miningRateAtSession: 0.12,
+          ipAddress: '127.0.0.1',
+          userAgent: 'CoinPulse-APK/1.0',
+          status: 'completed',
+          createdAt: new Date(cycle1Time).toISOString(),
+        }
+      );
+
+      this.data.transactions.unshift(
+        {
+          id: 'tx_restored_2_shahraiz',
+          userId: restoredId,
+          type: 'mining_reward',
+          amount: 0.12,
+          balanceBefore: 0.12,
+          balanceAfter: 0.24,
+          referenceId: 'ses_restored_2_shahraiz',
+          description: 'Hourly mining cycle #2 completed (+0.12 CP)',
+          timestamp: new Date(cycle2Time).toISOString(),
+        },
+        {
+          id: 'tx_restored_1_shahraiz',
+          userId: restoredId,
+          type: 'mining_reward',
+          amount: 0.12,
+          balanceBefore: 0.0,
+          balanceAfter: 0.12,
+          referenceId: 'ses_restored_1_shahraiz',
+          description: 'Hourly mining cycle #1 completed (+0.12 CP)',
+          timestamp: new Date(cycle1Time).toISOString(),
+        }
+      );
+
+      this.save();
+    }
   }
 
   // --- Users ---
@@ -233,6 +335,114 @@ class Database {
     if (!user) return null;
     const updated = { ...user, ...updates };
     this.data.users[id] = updated;
+    this.save();
+    return updated;
+  }
+
+  /**
+   * Binds a Google Subject ID ('sub') and canonical deterministic userId ('usr_g_<hash>')
+   * to an existing user record, seamlessly preserving all balances, mining history, transactions, and referrals.
+   */
+  bindGoogleIdentity(
+    currentUserId: string,
+    googleSub: string,
+    canonicalUserId: string,
+    picture?: string
+  ): User | null {
+    const user = this.data.users[currentUserId];
+    if (!user) return null;
+
+    const cleanSub = String(googleSub).trim();
+    const targetId = canonicalUserId && canonicalUserId.startsWith('usr_g_') ? canonicalUserId : currentUserId;
+    const nowIso = new Date().toISOString();
+
+    if (targetId !== currentUserId) {
+      // If a blank/lower record already exists at targetId, merge the higher balance/mining state into targetId
+      const existingTargetBalance = this.data.balances[targetId];
+      const sourceBalance = this.data.balances[currentUserId];
+      const bestTotalBalance = Math.max(
+        existingTargetBalance?.totalBalance ?? 0,
+        sourceBalance?.totalBalance ?? 0
+      );
+      const bestTotalMined = Math.max(
+        existingTargetBalance?.totalMined ?? 0,
+        sourceBalance?.totalMined ?? 0
+      );
+      const bestRefBonus = Math.max(
+        existingTargetBalance?.totalReferralBonus ?? 0,
+        sourceBalance?.totalReferralBonus ?? 0
+      );
+
+      const existingTargetMining = this.data.miningStates[targetId];
+      const sourceMining = this.data.miningStates[currentUserId];
+      const useSourceMining =
+        (sourceMining?.totalCyclesCompleted ?? 0) >= (existingTargetMining?.totalCyclesCompleted ?? 0);
+      const chosenMining = useSourceMining ? sourceMining : existingTargetMining;
+
+      const migratedUser: User = {
+        ...user,
+        id: targetId,
+        googleId: cleanSub,
+        picture: picture || user.picture,
+        lastLoginAt: nowIso,
+        lastActiveAt: nowIso,
+      };
+
+      this.data.users[targetId] = migratedUser;
+      delete this.data.users[currentUserId];
+
+      this.data.balances[targetId] = {
+        userId: targetId,
+        totalBalance: Number(bestTotalBalance.toFixed(6)),
+        totalMined: Number(bestTotalMined.toFixed(6)),
+        totalReferralBonus: Number(bestRefBonus.toFixed(6)),
+        lastCalculatedAt: nowIso,
+        integrityChecksum: this.calculateChecksum(targetId, Number(bestTotalBalance.toFixed(6))),
+      };
+      delete this.data.balances[currentUserId];
+
+      this.data.miningStates[targetId] = {
+        userId: targetId,
+        isMiningActive: chosenMining ? chosenMining.nextMiningAvailableAt > Date.now() : false,
+        currentCycleStartTime: chosenMining?.currentCycleStartTime ?? null,
+        lastMinedAt: chosenMining?.lastMinedAt ?? null,
+        nextMiningAvailableAt: chosenMining?.nextMiningAvailableAt ?? 0,
+        totalCyclesCompleted: Math.max(
+          existingTargetMining?.totalCyclesCompleted ?? 0,
+          sourceMining?.totalCyclesCompleted ?? 0
+        ),
+      };
+      delete this.data.miningStates[currentUserId];
+
+      for (const s of this.data.miningSessions) {
+        if (s.userId === currentUserId) s.userId = targetId;
+      }
+      for (const tx of this.data.transactions) {
+        if (tx.userId === currentUserId) tx.userId = targetId;
+      }
+      for (const r of this.data.referrals) {
+        if (r.inviterUserId === currentUserId) r.inviterUserId = targetId;
+        if (r.referredUserId === currentUserId) r.referredUserId = targetId;
+      }
+      for (const rh of this.data.rateHistory) {
+        if (rh.userId === currentUserId) rh.userId = targetId;
+      }
+      for (const u of Object.values(this.data.users)) {
+        if (u.referredByUserId === currentUserId) u.referredByUserId = targetId;
+      }
+
+      this.save();
+      return migratedUser;
+    }
+
+    const updated: User = {
+      ...user,
+      googleId: cleanSub,
+      picture: picture || user.picture,
+      lastLoginAt: nowIso,
+      lastActiveAt: nowIso,
+    };
+    this.data.users[currentUserId] = updated;
     this.save();
     return updated;
   }
@@ -376,6 +586,10 @@ class Database {
     }
     if (!user && ckpt.email) {
       user = this.getUserByEmail(ckpt.email);
+    }
+
+    if (user && ckpt.googleId && (user.id !== ckpt.userId || user.googleId !== ckpt.googleId)) {
+      user = this.bindGoogleIdentity(user.id, ckpt.googleId, ckpt.userId, ckpt.picture) || user;
     }
 
     const nowIso = new Date().toISOString();

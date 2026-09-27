@@ -14,6 +14,7 @@ declare global {
     __COINPULSE_DEEP_LINK_AUTH__?: {
       token?: string;
       sid?: string;
+      ckpt?: string;
       error?: string;
     };
   }
@@ -22,6 +23,36 @@ declare global {
 function generateClientAuthSessionId(): string {
   const rand = Math.random().toString(36).substring(2, 12);
   return `gsess_${Date.now().toString(36)}_${rand}`;
+}
+
+function buildDirectGoogleOAuthUrl(params: {
+  clientId: string;
+  redirectUri: string;
+  sid: string;
+  referralCode?: string;
+  origin: string;
+  platform: string;
+  mode: string;
+}): string {
+  const nonce =
+    Math.random().toString(36).substring(2, 12) + Math.random().toString(36).substring(2, 12);
+  const state = JSON.stringify({
+    sid: params.sid,
+    ref: (params.referralCode || '').trim().toUpperCase(),
+    origin: params.origin,
+    platform: params.platform,
+    mode: params.mode,
+  });
+  const search = new URLSearchParams({
+    client_id: params.clientId,
+    redirect_uri: params.redirectUri,
+    response_type: 'id_token token',
+    scope: 'openid email profile',
+    nonce,
+    state,
+    prompt: 'select_account',
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${search.toString()}`;
 }
 
 interface AuthModalProps {
@@ -112,6 +143,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const completeWithVerifiedSession = (sessionData: {
     token: string;
+    stateCheckpoint?: string;
     user: User;
     balance: any;
     miningState: MiningStatusResponse;
@@ -122,6 +154,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       localStorage.removeItem('coinpulse_pending_sid');
     } catch {}
     api.setToken(sessionData.token);
+    if (sessionData.stateCheckpoint) {
+      api.setCheckpoint(sessionData.stateCheckpoint);
+    } else if (sessionData.miningState?.stateCheckpoint) {
+      api.setCheckpoint(sessionData.miningState.stateCheckpoint);
+    }
     const normalizedBalance: BalanceState = {
       balance:
         typeof sessionData.balance?.totalBalance === 'number'
@@ -132,6 +169,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       lastCalculatedAt: sessionData.balance?.lastCalculatedAt ?? new Date().toISOString(),
       integrityVerified: true,
     };
+    api.setCachedSession({
+      user: sessionData.user,
+      balance: normalizedBalance,
+      miningState: sessionData.miningState,
+      updatedAt: Date.now(),
+    });
     setIsLoading(false);
     onSuccess(sessionData.user, normalizedBalance, sessionData.miningState);
     onClose();
@@ -259,22 +302,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       localStorage.setItem('coinpulse_pending_sid', activeSid);
     } catch {}
 
-    // Always open a real OAuth URL immediately (never about:blank)
+    // Always build a direct https://accounts.google.com/o/oauth2/v2/auth URL so opening OAuth never blocks on backend cold-start
     const targetOAuthUrl =
       prefetchedAuthUrl ||
-      api.getGoogleDirectStartUrl({
-        sid: activeSid,
+      buildDirectGoogleOAuthUrl({
+        clientId: googleClientId,
         redirectUri: effectiveRedirectUri,
+        sid: activeSid,
         referralCode: referralCode.trim() || undefined,
         origin: window.location.origin,
         platform,
         mode: isCap ? 'redirect' : 'popup',
       });
 
+    // Register session & checkpoint with backend in background while user selects their Google account
+    api
+      .getGoogleAuthUrl({
+        sid: activeSid,
+        redirectUri: effectiveRedirectUri,
+        referralCode: referralCode.trim() || undefined,
+        origin: window.location.origin,
+        platform,
+        mode: isCap ? 'redirect' : 'popup',
+      })
+      .catch(() => {});
+
     let popup: Window | null = null;
 
     if (isCap) {
-      // On Android Capacitor, launch Chrome / system browser via Intent so the WebView stays on CoinPulse
+      // On Android Capacitor:
+      // 1. Try native JavascriptInterface bridge (CoinPulseNative.openExternalUrl)
+      // 2. Fallback to top-level navigation to accounts.google.com, which Capacitor's BridgeWebViewClient.shouldOverrideUrlLoading
+      //    intercepts for non-localhost hosts to launch Intent.ACTION_VIEW in Chrome while keeping the WebView on https://localhost
       let launchedNatively = false;
       try {
         if (window.CoinPulseNative?.openExternalUrl) {
@@ -283,18 +342,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       } catch {}
 
       if (!launchedNatively) {
-        const link = document.createElement('a');
-        link.href = targetOAuthUrl;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        setTimeout(() => {
-          try {
-            document.body.removeChild(link);
-          } catch {}
-        }, 200);
+        try {
+          window.location.assign(targetOAuthUrl);
+        } catch (navErr: any) {
+          setError(navErr?.message || 'Unable to launch Google sign-in browser.');
+          return;
+        }
       }
     } else {
       popup = window.open(
@@ -312,10 +365,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     let pollInterval: number | undefined;
+    let resumeResetTimeout: number | undefined;
     let bc: BroadcastChannel | null = null;
+    let consecutivePollErrors = 0;
 
     const cleanupListeners = () => {
       if (pollInterval) window.clearInterval(pollInterval);
+      if (resumeResetTimeout) window.clearTimeout(resumeResetTimeout);
       window.removeEventListener('message', messageHandler);
       window.removeEventListener('storage', storageHandler);
       window.removeEventListener('coinpulse-deep-link-auth', deepLinkHandler as EventListener);
@@ -371,6 +427,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     const deepLinkHandler = (event: CustomEvent) => {
       if (completedRef.current) return;
       const detail = event.detail || window.__COINPULSE_DEEP_LINK_AUTH__ || {};
+      if (detail.ckpt) {
+        api.setCheckpoint(detail.ckpt);
+      }
       if (detail.token) {
         cleanupListeners();
         restoreFromSessionToken(detail.token, detail.sid || activeSid);
@@ -392,6 +451,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             const raw = window.CoinPulseNative.consumePendingAuth();
             if (raw) {
               const parsed = JSON.parse(raw);
+              if (parsed?.ckpt) {
+                api.setCheckpoint(parsed.ckpt);
+              }
               if (parsed?.token) {
                 cleanupListeners();
                 await restoreFromSessionToken(parsed.token, parsed.sid || activeSid);
@@ -411,6 +473,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
       try {
         const statusRes = await api.getGoogleAuthSession(activeSid);
+        consecutivePollErrors = 0;
         if (statusRes.status === 'authenticated' && statusRes.session) {
           cleanupListeners();
           completeWithVerifiedSession(statusRes.session);
@@ -423,14 +486,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setAuthSessionId(generateClientAuthSessionId());
           return;
         }
-      } catch {
-        // Ignore transient polling errors while user is on Google sign-in screen
+      } catch (pollErr: any) {
+        consecutivePollErrors++;
+        if (consecutivePollErrors >= 6 && !completedRef.current) {
+          cleanupListeners();
+          setIsLoading(false);
+          setError(
+            pollErr?.message ||
+              'Unable to reach CoinPulse authentication server. Please verify your connection and try again.'
+          );
+          setAuthSessionId(generateClientAuthSessionId());
+        }
       }
     };
 
     const visibilityHandler = () => {
       if (document.visibilityState === 'visible') {
         checkSessionNow();
+        if (isCap) {
+          if (resumeResetTimeout) window.clearTimeout(resumeResetTimeout);
+          resumeResetTimeout = window.setTimeout(async () => {
+            await checkSessionNow();
+            if (!completedRef.current) {
+              cleanupListeners();
+              setIsLoading(false);
+              setAuthSessionId(generateClientAuthSessionId());
+            }
+          }, 2500);
+        }
       }
     };
 
@@ -468,10 +551,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setAuthSessionId(generateClientAuthSessionId());
       }
 
-      // Timeout after 5 minutes on mobile Capacitor
-      if (isCap && ticks > 250) {
+      // Timeout after 90 seconds on mobile Capacitor so it never spins forever
+      if (isCap && ticks > 75) {
         cleanupListeners();
         setIsLoading(false);
+        setError('Google sign-in timed out or was not completed. Please tap Continue with Google to try again.');
         setAuthSessionId(generateClientAuthSessionId());
       }
     }, 1200);
@@ -566,7 +650,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             className="w-full py-3 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs sm:text-sm shadow-lg shadow-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-3"
           >
             {isLoading ? (
-              <div className="w-4 h-4 rounded-full border-2 border-slate-900 border-t-transparent animate-spin" />
+              <>
+                <div className="w-4 h-4 rounded-full border-2 border-slate-900 border-t-transparent animate-spin" />
+                <span>Connecting to Google...</span>
+              </>
             ) : (
               <>
                 <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
@@ -591,6 +678,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </>
             )}
           </button>
+
+          {isLoading && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsLoading(false);
+                setAuthSessionId(generateClientAuthSessionId());
+              }}
+              className="w-full py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-medium transition-colors"
+            >
+              Cancel / Retry Google Sign-In
+            </button>
+          )}
         </div>
 
         {/* Informational Notes */}

@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
 
     private String pendingToken = "";
     private String pendingSid = "";
+    private String pendingCkpt = "";
     private String pendingError = "";
 
     @Override
@@ -31,6 +32,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onResume() {
         super.onResume();
+        registerNativeBridge();
         if (this.bridge == null || this.bridge.getWebView() == null) {
             return;
         }
@@ -72,9 +74,15 @@ public class MainActivity extends BridgeActivity {
                 return false;
             }
             try {
-                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim()));
-                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(browserIntent);
+                final Uri parsedUri = Uri.parse(url.trim());
+                runOnUiThread(() -> {
+                    try {
+                        Intent browserIntent = new Intent(Intent.ACTION_VIEW, parsedUri);
+                        browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(browserIntent);
+                    } catch (Exception ignored) {
+                    }
+                });
                 return true;
             } catch (Exception e) {
                 return false;
@@ -87,9 +95,11 @@ public class MainActivity extends BridgeActivity {
                 JSONObject obj = new JSONObject();
                 obj.put("token", pendingToken != null ? pendingToken : "");
                 obj.put("sid", pendingSid != null ? pendingSid : "");
+                obj.put("ckpt", pendingCkpt != null ? pendingCkpt : "");
                 obj.put("error", pendingError != null ? pendingError : "");
                 pendingToken = "";
                 pendingSid = "";
+                pendingCkpt = "";
                 pendingError = "";
                 return obj.toString();
             } catch (Exception e) {
@@ -112,10 +122,19 @@ public class MainActivity extends BridgeActivity {
 
         final String token = data.getQueryParameter("token") != null ? data.getQueryParameter("token") : "";
         final String sid = data.getQueryParameter("sid") != null ? data.getQueryParameter("sid") : "";
+        final String ckpt = data.getQueryParameter("ckpt") != null ? data.getQueryParameter("ckpt") : "";
         final String error = data.getQueryParameter("error") != null ? data.getQueryParameter("error") : "";
+
+        // Clear intent data after consuming so reopening the app from Recents does not replay an old deep link
+        try {
+            intent.setData(null);
+            setIntent(intent);
+        } catch (Exception ignored) {
+        }
 
         this.pendingToken = token;
         this.pendingSid = sid;
+        this.pendingCkpt = ckpt;
         this.pendingError = error;
 
         if (this.bridge == null || this.bridge.getWebView() == null) {
@@ -130,6 +149,7 @@ public class MainActivity extends BridgeActivity {
                     JSONObject detail = new JSONObject();
                     detail.put("token", token);
                     detail.put("sid", sid);
+                    detail.put("ckpt", ckpt);
                     detail.put("error", error);
 
                     StringBuilder js = new StringBuilder();
@@ -137,6 +157,11 @@ public class MainActivity extends BridgeActivity {
                     if (!token.isEmpty()) {
                         js.append("try { localStorage.setItem('coinpulse_session_token', ")
                           .append(JSONObject.quote(token))
+                          .append("); } catch(e){}");
+                    }
+                    if (!ckpt.isEmpty()) {
+                        js.append("try { localStorage.setItem('coinpulse_state_checkpoint', ")
+                          .append(JSONObject.quote(ckpt))
                           .append("); } catch(e){}");
                     }
                     js.append("window.__COINPULSE_DEEP_LINK_AUTH__ = ")

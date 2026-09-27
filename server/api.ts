@@ -9,6 +9,8 @@ import {
   AuthenticatedRequest,
   deriveDeterministicUserId,
   generateStateCheckpoint,
+  extractVerifiedCheckpointFromRequest,
+  StateCheckpointPayload,
 } from './auth.ts';
 import {
    verifyGoogleIdToken,
@@ -21,10 +23,21 @@ import { User, ReferralRecord } from './types.ts';
 const router = Router();
 
 // Prevent HTTP caching on all API endpoints so WebView / mobile resume always fetches authoritative server state
-router.use((_req: Request, res: Response, next) => {
+// Also automatically reconcile any valid HMAC-signed X-CoinPulse-Checkpoint sent by the client
+router.use((req: Request, res: Response, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
+
+  try {
+    const ckpt = extractVerifiedCheckpointFromRequest(req);
+    if (ckpt && ckpt.userId) {
+      db.reconcileVerifiedCheckpoint(ckpt);
+    }
+  } catch {
+    // Ignore invalid checkpoint headers
+  }
+
   next();
 });
 
@@ -131,6 +144,7 @@ interface PendingGoogleAuthSession {
   status: 'pending' | 'authenticated' | 'error';
   data?: any;
   error?: string;
+  checkpoint?: StateCheckpointPayload;
   createdAt: number;
 }
 const pendingGoogleAuthSessions = new Map<string, PendingGoogleAuthSession>();
@@ -201,11 +215,16 @@ function buildGoogleOAuthUrlForRequest(req: Request): {
       : `gsess_${crypto.randomBytes(12).toString('hex')}`;
 
   prunePendingAuthSessions();
-  if (!pendingGoogleAuthSessions.has(authSessionId)) {
+  const reqCkpt = extractVerifiedCheckpointFromRequest(req);
+  const existingSession = pendingGoogleAuthSessions.get(authSessionId);
+  if (!existingSession) {
     pendingGoogleAuthSessions.set(authSessionId, {
       status: 'pending',
+      checkpoint: reqCkpt || undefined,
       createdAt: Date.now(),
     });
+  } else if (reqCkpt && !existingSession.checkpoint) {
+    existingSession.checkpoint = reqCkpt;
   }
 
   const nonce = crypto.randomBytes(12).toString('hex');
@@ -286,13 +305,53 @@ router.get('/auth/google/session/:sid', (req: Request, res: Response): void => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   prunePendingAuthSessions();
   const sid = (req.params.sid || '').trim();
+  const reqCkpt = extractVerifiedCheckpointFromRequest(req);
   const entry = pendingGoogleAuthSessions.get(sid);
   if (!entry) {
+    if (reqCkpt && sid) {
+      pendingGoogleAuthSessions.set(sid, {
+        status: 'pending',
+        checkpoint: reqCkpt,
+        createdAt: Date.now(),
+      });
+    }
     res.json({
       success: true,
       status: 'pending',
     });
     return;
+  }
+
+  if (reqCkpt && !entry.checkpoint) {
+    entry.checkpoint = reqCkpt;
+  }
+
+  // If authenticated, ensure any checkpoint supplied by the polling client (e.g. Android WebView) is reconciled
+  if (entry.status === 'authenticated' && entry.data?.user) {
+    const authUser = entry.data.user;
+    const candidateCkpt = reqCkpt || entry.checkpoint;
+    if (
+      candidateCkpt &&
+      (candidateCkpt.userId === authUser.id ||
+        (authUser.googleId && candidateCkpt.googleId === authUser.googleId) ||
+        (authUser.email && candidateCkpt.email.toLowerCase() === authUser.email.toLowerCase()))
+    ) {
+      const reconciledUser = db.reconcileVerifiedCheckpoint({
+        ...candidateCkpt,
+        userId: authUser.id,
+        googleId: authUser.googleId || candidateCkpt.googleId,
+      });
+      const freshBalance = db.getBalance(reconciledUser.id);
+      const freshMiningState = buildAuthoritativeMiningStatus(reconciledUser);
+      entry.data = {
+        ...entry.data,
+        user: sanitizeUser(reconciledUser),
+        balance: freshBalance,
+        miningState: freshMiningState,
+        stateCheckpoint: freshMiningState.stateCheckpoint,
+        serverTime: freshMiningState.serverTime,
+      };
+    }
   }
 
   res.json({
@@ -371,21 +430,38 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
     const googleSub = googleProfile.sub;
     const googleEmail = googleProfile.email.toLowerCase().trim();
 
+    const canonicalUserId = deriveDeterministicUserId(googleSub);
+
     // 1. Check if user already exists by persistent Google Subject ID (Preferred stable ID)
-    let user = db.getUserByGoogleId(googleSub);
+    let user = db.getUserByGoogleId(googleSub) || db.getUserById(canonicalUserId);
 
     // 2. If not found by googleId, check by email to gracefully link existing miners
     if (!user) {
       user = db.getUserByEmail(googleEmail);
       if (user) {
-        // Link Google ID to existing account
-        db.updateUser(user.id, {
-          googleId: googleSub,
-          picture: googleProfile.picture || user.picture,
-          lastLoginAt: new Date().toISOString(),
-          lastActiveAt: new Date().toISOString(),
-        });
-        user = db.getUserById(user.id)!;
+        // Bind Google sub and canonical sub-derived userId while preserving all balance & mining history
+        user =
+          db.bindGoogleIdentity(user.id, googleSub, canonicalUserId, googleProfile.picture) ||
+          db.getUserById(user.id)!;
+      }
+    } else if (user.id !== canonicalUserId || user.googleId !== googleSub) {
+      // Also merge if a provisional/email-restored record exists for the same email with higher balance
+      const emailRecord = db.getUserByEmail(googleEmail);
+      if (emailRecord && emailRecord.id !== user.id) {
+        user =
+          db.bindGoogleIdentity(emailRecord.id, googleSub, canonicalUserId, googleProfile.picture) ||
+          user;
+      } else {
+        user =
+          db.bindGoogleIdentity(user.id, googleSub, canonicalUserId, googleProfile.picture) ||
+          user;
+      }
+    } else {
+      const emailRecord = db.getUserByEmail(googleEmail);
+      if (emailRecord && emailRecord.id !== user.id) {
+        user =
+          db.bindGoogleIdentity(emailRecord.id, googleSub, canonicalUserId, googleProfile.picture) ||
+          user;
       }
     }
 
@@ -485,6 +561,29 @@ router.post('/auth/google', async (req: Request, res: Response): Promise<void> =
         lastActiveAt: new Date().toISOString(),
       });
       user = db.getUserById(user.id)!;
+    }
+
+    // Reconcile verified checkpoint from request or pending auth session so container restarts never zero out balances
+    const reqCheckpoint = extractVerifiedCheckpointFromRequest(req);
+    const pendingSessionEntry =
+      authSessionId && typeof authSessionId === 'string'
+        ? pendingGoogleAuthSessions.get(authSessionId.trim())
+        : undefined;
+    const checkpointToReconcile = reqCheckpoint || pendingSessionEntry?.checkpoint || null;
+
+    if (
+      checkpointToReconcile &&
+      (checkpointToReconcile.userId === user.id ||
+        checkpointToReconcile.googleId === googleSub ||
+        checkpointToReconcile.email.toLowerCase() === googleEmail)
+    ) {
+      user = db.reconcileVerifiedCheckpoint({
+        ...checkpointToReconcile,
+        userId: user.id,
+        googleId: googleSub,
+        email: googleEmail,
+      });
+      isNewUser = false;
     }
 
     const token = generateToken(user);
