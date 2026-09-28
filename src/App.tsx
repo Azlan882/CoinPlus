@@ -24,14 +24,20 @@ import { ApkDownloadModal } from './components/ApkDownloadModal.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { AlertCircle, WifiOff } from 'lucide-react';
 import { sounds } from './utils/audio.ts';
+import {
+  requestNotificationPermissionAfterSignIn,
+  syncMiningCycleNotification,
+  cancelScheduledMiningNotification,
+} from './utils/notifications.ts';
 
 export default function App() {
   const initialCached = api.getToken() ? api.getCachedSession() : null;
   const [currentUser, setCurrentUser] = useState<User | null>(initialCached?.user ?? null);
   const [balance, setBalance] = useState<BalanceState | null>(initialCached?.balance ?? null);
-  const [miningStatus, setMiningStatus] = useState<MiningStatusResponse | null>(
-    initialCached?.miningState ?? null
-  );
+  // Never initialize miningStatus from localStorage cache: always wait for authoritative server response
+  const [miningStatus, setMiningStatus] = useState<MiningStatusResponse | null>(null);
+  const [hasAuthoritativeMiningState, setHasAuthoritativeMiningState] = useState<boolean>(false);
+  const [isMiningSyncing, setIsMiningSyncing] = useState<boolean>(() => Boolean(api.getToken()));
   const [referralsData, setReferralsData] = useState<ReferralsResponse | null>(null);
 
   const [currentTab, setCurrentTab] = useState<TabType>('mining');
@@ -53,45 +59,94 @@ export default function App() {
   const miningStatusRef = useRef<MiningStatusResponse | null>(null);
   const lastSyncAtRef = useRef<number>(0);
   const cooldownCompletionSyncedRef = useRef<boolean>(false);
+  const latestSyncRequestIdRef = useRef<number>(0);
+  const latestAppliedServerTimeRef = useRef<number>(0);
 
-  const updateServerClockOffset = useCallback((serverTime?: number) => {
-    if (typeof serverTime === 'number' && serverTime > 0) {
-      const offset = serverTime - Date.now();
+  const updateServerClockOffset = useCallback((liveServerTime?: number) => {
+    if (typeof liveServerTime === 'number' && liveServerTime > 0) {
+      const offset = liveServerTime - Date.now();
       serverClockOffsetRef.current = offset;
       setServerClockOffset(offset);
     }
   }, []);
 
   const computeRemainingFromStatus = useCallback((statusObj: MiningStatusResponse | null): number => {
-    if (!statusObj || !statusObj.nextMiningAvailableAt || statusObj.nextMiningAvailableAt <= 0) {
+    if (!statusObj) {
+      return 0;
+    }
+    if (
+      statusObj.status === 'ready' ||
+      statusObj.status === 'available' ||
+      statusObj.isCooldownActive === false ||
+      !statusObj.nextMiningAvailableAt ||
+      statusObj.nextMiningAvailableAt <= 0
+    ) {
       return 0;
     }
     const nowServerMs = Date.now() + serverClockOffsetRef.current;
-    const remainingMs = statusObj.nextMiningAvailableAt - nowServerMs;
+    const remainingMs = Math.max(0, statusObj.nextMiningAvailableAt - nowServerMs);
     if (remainingMs <= 0) {
       return 0;
     }
     return Math.ceil(remainingMs / 1000);
   }, []);
 
+  const currentUserIdRef = useRef<string | null>(initialCached?.user?.id ?? null);
+  currentUserIdRef.current = currentUser?.id ?? null;
+
   const applyAuthoritativeMiningStatus = useCallback(
-    (statusObj: MiningStatusResponse | null) => {
+    (statusObj: MiningStatusResponse | null, options?: { isLiveServerResponse?: boolean }) => {
       if (!statusObj) {
         miningStatusRef.current = null;
+        latestAppliedServerTimeRef.current = 0;
         setMiningStatus(null);
+        setHasAuthoritativeMiningState(false);
+        setIsMiningSyncing(false);
         setRemainingSeconds(0);
+        cancelScheduledMiningNotification().catch(() => {});
         return;
       }
-      if (typeof statusObj.serverTime === 'number' && statusObj.serverTime > 0) {
+
+      const isLive = options?.isLiveServerResponse !== false;
+      if (isLive && typeof statusObj.serverTime === 'number' && statusObj.serverTime > 0) {
+        // Prevent out-of-order older HTTP responses from overwriting a newer authoritative server state
+        if (
+          latestAppliedServerTimeRef.current > 0 &&
+          statusObj.serverTime < latestAppliedServerTimeRef.current &&
+          (statusObj.totalCyclesCompleted ?? 0) <= (miningStatusRef.current?.totalCyclesCompleted ?? 0)
+        ) {
+          return;
+        }
+        latestAppliedServerTimeRef.current = statusObj.serverTime;
         updateServerClockOffset(statusObj.serverTime);
       }
-      miningStatusRef.current = statusObj;
-      setMiningStatus(statusObj);
+
       const nextRem = computeRemainingFromStatus(statusObj);
+      const normalizedStatus: MiningStatusResponse = {
+        ...statusObj,
+        isCooldownActive: nextRem > 0,
+        status:
+          nextRem > 0
+            ? 'mining'
+            : statusObj.lastMinedAt === null
+            ? 'ready'
+            : 'available',
+        remainingSeconds: nextRem,
+      };
+
+      miningStatusRef.current = normalizedStatus;
+      setMiningStatus(normalizedStatus);
       setRemainingSeconds(nextRem);
+      setHasAuthoritativeMiningState(true);
+      setIsMiningSyncing(false);
       if (nextRem > 0) {
         cooldownCompletionSyncedRef.current = false;
+      } else {
+        cooldownCompletionSyncedRef.current = true;
       }
+
+      // Synchronize OS-level mining cycle completion notification with authoritative server timestamp
+      syncMiningCycleNotification(normalizedStatus, currentUserIdRef.current).catch(() => {});
     },
     [computeRemainingFromStatus, updateServerClockOffset]
   );
@@ -103,16 +158,46 @@ export default function App() {
     }, 4500);
   };
 
-  // Sync authoritative state from server
+  // Sync authoritative state from server (immediately requests GET /api/mining/status and GET /api/auth/me)
   const syncServerData = useCallback(async () => {
-    if (!api.getToken()) return;
+    if (!api.getToken()) {
+      setIsMiningSyncing(false);
+      return;
+    }
+
+    const reqId = ++latestSyncRequestIdRef.current;
+    if (!miningStatusRef.current) {
+      setIsMiningSyncing(true);
+    }
 
     try {
       setIsRefreshing(true);
       lastSyncAtRef.current = Date.now();
-      const meRes = await api.getMe();
-      const statusRes: MiningStatusResponse =
-        meRes.miningState || (await api.getMiningStatus());
+
+      // Immediately request GET /api/mining/status so authoritative timer renders as fast as possible
+      const miningPromise = api
+        .getMiningStatus()
+        .then((statusRes) => {
+          if (reqId >= latestSyncRequestIdRef.current || statusRes.serverTime >= latestAppliedServerTimeRef.current) {
+            applyAuthoritativeMiningStatus(statusRes, { isLiveServerResponse: true });
+            setResumeSyncTick((t) => t + 1);
+          }
+          return statusRes;
+        })
+        .catch(() => null);
+
+      const [meRes, directMiningStatus] = await Promise.all([api.getMe(), miningPromise]);
+
+      // Ignore if a newer sync request started while this one was in flight and already applied newer state
+      if (reqId < latestSyncRequestIdRef.current && (meRes.serverTime ?? 0) < latestAppliedServerTimeRef.current) {
+        return;
+      }
+
+      const authoritativeMining: MiningStatusResponse =
+        directMiningStatus && (directMiningStatus.serverTime ?? 0) >= (meRes.miningState?.serverTime ?? 0)
+          ? directMiningStatus
+          : meRes.miningState || directMiningStatus;
+
       const nextBalance: BalanceState = {
         balance: meRes.balance.totalBalance,
         totalMined: meRes.balance.totalMined,
@@ -120,13 +205,16 @@ export default function App() {
         lastCalculatedAt: meRes.balance.lastCalculatedAt,
         integrityVerified: true,
       };
+      currentUserIdRef.current = meRes.user.id;
       setCurrentUser(meRes.user);
       setBalance(nextBalance);
-      applyAuthoritativeMiningStatus(statusRes);
+      if (authoritativeMining) {
+        applyAuthoritativeMiningStatus(authoritativeMining, { isLiveServerResponse: true });
+      }
       api.setCachedSession({
         user: meRes.user,
         balance: nextBalance,
-        miningState: statusRes,
+        miningState: null,
         updatedAt: Date.now(),
       });
       setResumeSyncTick((t) => t + 1);
@@ -138,34 +226,12 @@ export default function App() {
         applyAuthoritativeMiningStatus(null);
         setIsAuthOpen(true);
       } else {
-        // Transient cold-start or network issue: preserve current/cached session and retry in background
+        // Transient cold-start or network issue: retry GET /api/mining/status and GET /api/auth/me in background
         window.setTimeout(() => {
           if (api.getToken()) {
-            api
-              .getMe()
-              .then((meRes) => {
-                const nextBal: BalanceState = {
-                  balance: meRes.balance.totalBalance,
-                  totalMined: meRes.balance.totalMined,
-                  totalReferralBonus: meRes.balance.totalReferralBonus,
-                  lastCalculatedAt: meRes.balance.lastCalculatedAt,
-                  integrityVerified: true,
-                };
-                setCurrentUser(meRes.user);
-                setBalance(nextBal);
-                if (meRes.miningState) {
-                  applyAuthoritativeMiningStatus(meRes.miningState);
-                }
-                api.setCachedSession({
-                  user: meRes.user,
-                  balance: nextBal,
-                  miningState: meRes.miningState || miningStatusRef.current,
-                  updatedAt: Date.now(),
-                });
-              })
-              .catch(() => {});
+            syncServerData();
           }
-        }, 2500);
+        }, 2000);
       }
     } finally {
       setIsRefreshing(false);
@@ -244,20 +310,66 @@ export default function App() {
       if (detail.token) {
         api.setToken(detail.token);
         setIsAuthOpen(false);
+        requestNotificationPermissionAfterSignIn(true).catch(() => {});
         syncServerData();
       } else if (detail.error) {
         showNotification(detail.error, 'error');
       }
     };
 
+    const handleNotificationTap = () => {
+      window.__COINPULSE_NOTIFICATION_TAP__ = undefined;
+      try {
+        window.CoinPulseNative?.consumeNotificationTap?.();
+      } catch {}
+      setCurrentTab('mining');
+      setIsApkModalOpen(false);
+      if (api.getToken()) {
+        syncServerData();
+      }
+    };
+
+    // Check if the app was launched or resumed by tapping the mining cycle completion notification
+    if (window.__COINPULSE_NOTIFICATION_TAP__?.tapped) {
+      handleNotificationTap();
+    } else if (window.CoinPulseNative?.consumeNotificationTap) {
+      try {
+        const rawTap = window.CoinPulseNative.consumeNotificationTap();
+        if (rawTap && JSON.parse(rawTap)?.tapped) {
+          handleNotificationTap();
+        }
+      } catch {}
+    }
+
     const handleAppResume = async () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
         return;
       }
 
+      if (window.__COINPULSE_NOTIFICATION_TAP__?.tapped) {
+        handleNotificationTap();
+      } else if (window.CoinPulseNative?.consumeNotificationTap) {
+        try {
+          const rawTap = window.CoinPulseNative.consumeNotificationTap();
+          if (rawTap && JSON.parse(rawTap)?.tapped) {
+            handleNotificationTap();
+          }
+        } catch {}
+      }
+
       // 1. Immediately recalculate remaining time & visual progress from stored server timestamp
       if (miningStatusRef.current) {
         const recalculated = computeRemainingFromStatus(miningStatusRef.current);
+        if (recalculated === 0 && miningStatusRef.current.isCooldownActive) {
+          const completedStatus: MiningStatusResponse = {
+            ...miningStatusRef.current,
+            isCooldownActive: false,
+            status: miningStatusRef.current.lastMinedAt === null ? 'ready' : 'available',
+            remainingSeconds: 0,
+          };
+          miningStatusRef.current = completedStatus;
+          setMiningStatus(completedStatus);
+        }
         setRemainingSeconds(recalculated);
         setResumeSyncTick((t) => t + 1);
       }
@@ -267,6 +379,7 @@ export default function App() {
         api.setToken(window.__COINPULSE_DEEP_LINK_AUTH__.token);
         window.__COINPULSE_DEEP_LINK_AUTH__ = undefined;
         setIsAuthOpen(false);
+        requestNotificationPermissionAfterSignIn(true).catch(() => {});
         syncServerData();
         return;
       }
@@ -278,6 +391,7 @@ export default function App() {
           if (res.status === 'authenticated' && res.session) {
             localStorage.removeItem('coinpulse_pending_sid');
             api.setToken(res.session.token);
+            currentUserIdRef.current = res.session.user.id;
             setCurrentUser(res.session.user);
             setBalance({
               balance:
@@ -292,6 +406,7 @@ export default function App() {
             applyAuthoritativeMiningStatus(res.session.miningState);
             setIsAuthOpen(false);
             showNotification(res.session.message || 'Signed in with Google!', 'success');
+            requestNotificationPermissionAfterSignIn(true).catch(() => {});
             syncServerData();
             return;
           }
@@ -308,6 +423,7 @@ export default function App() {
     };
 
     window.addEventListener('coinpulse-deep-link-auth', handleDeepLinkAuth);
+    window.addEventListener('coinpulse-notification-tap', handleNotificationTap);
     window.addEventListener('coinpulse-app-resume', handleAppResume);
     window.addEventListener('resume', handleAppResume);
     document.addEventListener('resume', handleAppResume);
@@ -315,8 +431,9 @@ export default function App() {
     window.addEventListener('focus', handleAppResume);
     window.addEventListener('pageshow', handleAppResume);
 
-    // Optional Capacitor App plugin listener if present at runtime
+    // Optional Capacitor App & LocalNotifications plugin listeners if present at runtime
     let capAppListener: any = null;
+    let capNotifListener: any = null;
     const capAppPlugin = (window as any).Capacitor?.Plugins?.App;
     if (capAppPlugin && typeof capAppPlugin.addListener === 'function') {
       try {
@@ -327,6 +444,14 @@ export default function App() {
         });
       } catch {}
     }
+    const capNotifPlugin = (window as any).Capacitor?.Plugins?.LocalNotifications;
+    if (capNotifPlugin && typeof capNotifPlugin.addListener === 'function') {
+      try {
+        capNotifListener = capNotifPlugin.addListener('localNotificationActionPerformed', () => {
+          handleNotificationTap();
+        });
+      } catch {}
+    }
 
     const pendingGoogleToken = sessionStorage.getItem('pending_google_token');
     if (pendingGoogleToken) {
@@ -334,6 +459,7 @@ export default function App() {
       api
         .loginWithGoogle(pendingGoogleToken, refParam?.toUpperCase() || undefined)
         .then((res) => {
+          currentUserIdRef.current = res.user.id;
           setCurrentUser(res.user);
           setBalance({
             balance: res.balance.totalBalance,
@@ -345,6 +471,7 @@ export default function App() {
           applyAuthoritativeMiningStatus(res.miningState);
           setIsAuthOpen(false);
           showNotification(res.message, 'success');
+          requestNotificationPermissionAfterSignIn(true).catch(() => {});
           syncServerData();
         })
         .catch((err) => {
@@ -354,16 +481,17 @@ export default function App() {
     } else if (api.getToken()) {
       const cached = api.getCachedSession();
       if (cached?.user) {
+        currentUserIdRef.current = cached.user.id;
         setCurrentUser(cached.user);
         setBalance(cached.balance);
-        if (cached.miningState) {
-          applyAuthoritativeMiningStatus(cached.miningState);
-        }
       }
+      // Never apply cached.miningState on startup: keep neutral Syncing state until GET /api/mining/status arrives
+      setIsMiningSyncing(true);
       setIsAuthOpen(false);
       syncServerData();
     } else {
       // Auto open Google auth on first visit so user can sign in
+      setIsMiningSyncing(false);
       setIsAuthOpen(true);
     }
 
@@ -371,6 +499,7 @@ export default function App() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('coinpulse-deep-link-auth', handleDeepLinkAuth);
+      window.removeEventListener('coinpulse-notification-tap', handleNotificationTap);
       window.removeEventListener('coinpulse-app-resume', handleAppResume);
       window.removeEventListener('resume', handleAppResume);
       document.removeEventListener('resume', handleAppResume);
@@ -382,6 +511,11 @@ export default function App() {
           capAppListener.remove();
         } catch {}
       }
+      if (capNotifListener && typeof capNotifListener.remove === 'function') {
+        try {
+          capNotifListener.remove();
+        } catch {}
+      }
     };
   }, [applyAuthoritativeMiningStatus, computeRemainingFromStatus, syncServerData]);
 
@@ -390,9 +524,6 @@ export default function App() {
     if (timerRef.current) clearInterval(timerRef.current);
 
     const tick = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-        return;
-      }
       const statusObj = miningStatusRef.current;
       if (!statusObj) {
         setRemainingSeconds(0);
@@ -412,20 +543,39 @@ export default function App() {
         api.getMiningStatus().catch(() => {});
       }
 
-      if (nextRemaining === 0 && statusObj.nextMiningAvailableAt > 0 && !cooldownCompletionSyncedRef.current) {
+      if (
+        nextRemaining === 0 &&
+        statusObj.isCooldownActive &&
+        statusObj.nextMiningAvailableAt > 0 &&
+        !cooldownCompletionSyncedRef.current
+      ) {
         cooldownCompletionSyncedRef.current = true;
-        // Cooldown finished: re-sync with server to confirm authoritative 'available' status
+        // Cooldown finished: immediately transition local status to 'available' and verify with server
+        const availableState: MiningStatusResponse = {
+          ...statusObj,
+          isCooldownActive: false,
+          status: statusObj.lastMinedAt === null ? 'ready' : 'available',
+          remainingSeconds: 0,
+        };
+        miningStatusRef.current = availableState;
+        setMiningStatus(availableState);
         syncServerData();
       }
     };
 
     tick();
-    timerRef.current = window.setInterval(tick, 1000);
+    timerRef.current = window.setInterval(tick, 500);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [miningStatus?.nextMiningAvailableAt, computeRemainingFromStatus, syncServerData]);
+  }, [
+    miningStatus?.nextMiningAvailableAt,
+    miningStatus?.serverTime,
+    hasAuthoritativeMiningState,
+    computeRemainingFromStatus,
+    syncServerData,
+  ]);
 
   // When tab changes to team, fetch fresh referrals
   useEffect(() => {
@@ -482,7 +632,7 @@ export default function App() {
       api.setCachedSession({
         user: currentUser,
         balance: nextBalance,
-        miningState: effectiveStatus,
+        miningState: null,
         updatedAt: Date.now(),
       });
       setResumeSyncTick((t) => t + 1);
@@ -517,6 +667,7 @@ export default function App() {
 
   const handleLogout = () => {
     api.logout();
+    currentUserIdRef.current = null;
     setCurrentUser(null);
     setBalance(null);
     applyAuthoritativeMiningStatus(null);
@@ -530,10 +681,12 @@ export default function App() {
     initBalance: BalanceState,
     state: MiningStatusResponse
   ) => {
+    currentUserIdRef.current = user.id;
     setCurrentUser(user);
     setBalance(initBalance);
     applyAuthoritativeMiningStatus(state);
     showNotification(`Welcome, ${user.username}! Mining station online.`, 'success');
+    requestNotificationPermissionAfterSignIn(true).catch(() => {});
     syncServerData();
   };
 
@@ -605,6 +758,7 @@ export default function App() {
               bonusRate={miningStatus?.bonusMiningRate ?? 0.0}
               remainingSeconds={remainingSeconds}
               isMiningLoading={isMiningLoading}
+              isSyncing={!hasAuthoritativeMiningState && Boolean(currentUser || isMiningSyncing || api.getToken())}
               onMineClick={handleMine}
               serverSyncTime={miningStatus?.serverTime ?? Date.now()}
               nextMiningAvailableAt={miningStatus?.nextMiningAvailableAt ?? 0}

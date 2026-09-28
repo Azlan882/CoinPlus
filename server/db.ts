@@ -368,6 +368,7 @@ class Database {
       if (!id) return false;
       return (
         id.startsWith('usr_test_') ||
+        id.startsWith('usr_lifecycle_') ||
         id.startsWith('usr_bg_test_') ||
         id.startsWith('usr_exp_test_') ||
         id.startsWith('usr_google_17') ||
@@ -802,10 +803,7 @@ class Database {
     }
 
     const currentMining = this.getMiningState(user.id);
-    if (
-      ckpt.totalCyclesCompleted > currentMining.totalCyclesCompleted ||
-      ckpt.nextMiningAvailableAt > currentMining.nextMiningAvailableAt
-    ) {
+    if (ckpt.totalCyclesCompleted > currentMining.totalCyclesCompleted) {
       this.updateMiningState(user.id, {
         isMiningActive: ckpt.nextMiningAvailableAt > Date.now(),
         currentCycleStartTime: ckpt.currentCycleStartTime,

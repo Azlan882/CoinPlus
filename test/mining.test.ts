@@ -657,6 +657,275 @@ async function runTests() {
     assert.strictEqual(mineData2.sessionNumber, 2);
   });
 
+  // 18. Authoritative Mining Timer Startup, Resume & Multi-Cycle Verification (Cases A-G)
+  await test('Mining Timer Startup & Lifecycle (Cases A-G): Authoritative GET /api/mining/status timestamps across active, 10m reopen, minimize/resume, kill/reopen, completed, and 3+ cycles', async () => {
+    const baseUrl = 'http://localhost:8080';
+    const apkOrigin = 'https://localhost';
+
+    const timerUserId = `usr_test_timer_${Date.now()}`;
+    const timerUser: User = {
+      id: timerUserId,
+      googleId: `gsub_timer_${Date.now()}`,
+      username: `timerminer_${Date.now().toString().slice(-4)}`,
+      email: `timer_test_${Date.now()}@pulse.internal`,
+      referralCode: `TM_${Date.now().toString().slice(-4)}`,
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(timerUser, 0.0);
+    const token = generateToken(timerUser);
+
+    // Pre-mining state check: never mined before -> status === 'ready', remainingSeconds === 0
+    const initialStatusRes = await fetch(`${baseUrl}/api/mining/status`, {
+      headers: { Origin: apkOrigin, Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    assert.strictEqual(initialStatusRes.status, 200);
+    const initialStatus: any = await initialStatusRes.json();
+    assert.strictEqual(initialStatus.status, 'ready');
+    assert.strictEqual(initialStatus.isCooldownActive, false);
+    assert.strictEqual(initialStatus.remainingSeconds, 0);
+
+    // Cases F & G: Run 3 full cycles and verify Cases A, B, C, D, E within each cycle
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      // Case F: Start a new mining cycle
+      const startRes = await fetch(`${baseUrl}/api/mine`, {
+        method: 'POST',
+        headers: {
+          Origin: apkOrigin,
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ clientTimestamp: Date.now() }),
+      });
+      assert.strictEqual(startRes.status, 200, `Cycle ${cycle} start must return 200`);
+      const startData: any = await startRes.json();
+      assert.strictEqual(startData.sessionNumber, cycle);
+      assert.strictEqual(startData.miningState.status, 'mining');
+      assert.strictEqual(startData.miningState.isCooldownActive, true);
+      assert(
+        startData.nextMiningAvailableAt - startData.cycleStartTime === 3600 * 1000,
+        'Authoritative cycle duration must be exactly 3,600,000 ms'
+      );
+
+      // Case A: Open app while an active mining cycle is running
+      const activeRes = await fetch(`${baseUrl}/api/mining/status`, {
+        headers: { Origin: apkOrigin, Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+      const activeData: any = await activeRes.json();
+      assert.strictEqual(activeData.status, 'mining');
+      assert.strictEqual(activeData.isCooldownActive, true);
+      const derivedRemainingA = Math.ceil(Math.max(0, activeData.nextMiningAvailableAt - activeData.serverTime) / 1000);
+      assert(derivedRemainingA >= 3595 && derivedRemainingA <= 3600, `Case A expected ~3600s, got ${derivedRemainingA}s`);
+
+      // Case B: Close and reopen after 10 minutes (600 seconds elapsed)
+      db.syncIfModifiedOnDisk();
+      const tenMinAgoStart = Date.now() - 600 * 1000;
+      const fiftyMinLeftEnd = tenMinAgoStart + 3600 * 1000;
+      db.updateMiningState(timerUser.id, {
+        currentCycleStartTime: tenMinAgoStart,
+        lastMinedAt: tenMinAgoStart,
+        nextMiningAvailableAt: fiftyMinLeftEnd,
+        isMiningActive: true,
+      });
+      const ckpt10m = generateStateCheckpoint(timerUser.id)!;
+
+      const reopen10mRes = await fetch(`${baseUrl}/api/mining/status`, {
+        headers: {
+          Origin: apkOrigin,
+          Authorization: `Bearer ${token}`,
+          'X-CoinPulse-Checkpoint': ckpt10m,
+          Accept: 'application/json',
+        },
+      });
+      const reopen10mData: any = await reopen10mRes.json();
+      const derivedRemainingB = Math.ceil(
+        Math.max(0, reopen10mData.nextMiningAvailableAt - reopen10mData.serverTime) / 1000
+      );
+      assert(
+        derivedRemainingB >= 2995 && derivedRemainingB <= 3001,
+        `Case B (10m elapsed) expected ~3000s remaining, got ${derivedRemainingB}s`
+      );
+
+      // Case C & D: Minimize for 25 more minutes (total 35m elapsed) or kill & reopen app
+      db.syncIfModifiedOnDisk();
+      const thirtyFiveMinAgoStart = Date.now() - 2100 * 1000;
+      const twentyFiveMinLeftEnd = thirtyFiveMinAgoStart + 3600 * 1000;
+      db.updateMiningState(timerUser.id, {
+        currentCycleStartTime: thirtyFiveMinAgoStart,
+        lastMinedAt: thirtyFiveMinAgoStart,
+        nextMiningAvailableAt: twentyFiveMinLeftEnd,
+        isMiningActive: true,
+      });
+      const ckpt35m = generateStateCheckpoint(timerUser.id)!;
+
+      const resume35mRes = await fetch(`${baseUrl}/api/mining/status`, {
+        headers: {
+          Origin: apkOrigin,
+          Authorization: `Bearer ${token}`,
+          'X-CoinPulse-Checkpoint': ckpt35m,
+          Accept: 'application/json',
+        },
+      });
+      const resume35mData: any = await resume35mRes.json();
+      const derivedRemainingCD = Math.ceil(
+        Math.max(0, resume35mData.nextMiningAvailableAt - resume35mData.serverTime) / 1000
+      );
+      assert(
+        derivedRemainingCD >= 1495 && derivedRemainingCD <= 1501,
+        `Case C/D (35m elapsed) expected ~1500s remaining, got ${derivedRemainingCD}s`
+      );
+
+      // Case E: Open immediately after a cycle has completed
+      db.syncIfModifiedOnDisk();
+      const completedStart = Date.now() - 3605 * 1000;
+      const completedEnd = completedStart + 3600 * 1000;
+      db.updateMiningState(timerUser.id, {
+        currentCycleStartTime: completedStart,
+        lastMinedAt: completedStart,
+        nextMiningAvailableAt: completedEnd,
+        isMiningActive: true,
+      });
+      const ckptCompleted = generateStateCheckpoint(timerUser.id)!;
+
+      const completedRes = await fetch(`${baseUrl}/api/mining/status`, {
+        headers: {
+          Origin: apkOrigin,
+          Authorization: `Bearer ${token}`,
+          'X-CoinPulse-Checkpoint': ckptCompleted,
+          Accept: 'application/json',
+        },
+      });
+      const completedData: any = await completedRes.json();
+      assert.strictEqual(completedData.status, 'available', `Cycle ${cycle} Case E must immediately return 'available'`);
+      assert.strictEqual(completedData.isCooldownActive, false, `Cycle ${cycle} Case E isCooldownActive must be false`);
+      assert.strictEqual(completedData.remainingSeconds, 0, `Cycle ${cycle} Case E remainingSeconds must be 0`);
+    }
+  });
+
+  // 19. Mining Cycle Completion Notifications: Permission, Server-Authoritative Scheduling, Duplicate Prevention & Cancellation
+  await test('Mining Notifications: One-time permission request, server-timestamp scheduling, duplicate prevention, and cancellation on completion', async () => {
+    const {
+      buildCycleNotificationKey,
+      deriveCycleNotificationId,
+      requestNotificationPermissionAfterSignIn,
+      syncMiningCycleNotification,
+    } = await import('../src/utils/notifications.ts');
+
+    const storageMap = new Map<string, string>();
+    const scheduledAlarms: Array<{ cycleKey: string; triggerAtEpochMs: number; notificationId: number; title: string; body: string }> = [];
+    let cancelCount = 0;
+    let permStatus = 'prompt';
+    let requestPermCalls = 0;
+
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => storageMap.get(k) ?? null,
+      setItem: (k: string, v: string) => storageMap.set(k, v),
+      removeItem: (k: string) => storageMap.delete(k),
+    };
+    (globalThis as any).window = {
+      clearTimeout: clearTimeout,
+      CoinPulseNative: {
+        getNotificationPermissionStatus: () => permStatus,
+        requestNotificationPermissionOnce: () => {
+          requestPermCalls++;
+          permStatus = 'denied';
+          return 'requested';
+        },
+        scheduleMiningCycleNotification: (
+          cycleKey: string,
+          triggerAtEpochMs: number,
+          notificationId: number,
+          title: string,
+          body: string
+        ) => {
+          scheduledAlarms.push({ cycleKey, triggerAtEpochMs, notificationId, title, body });
+          return true;
+        },
+        cancelMiningCycleNotification: () => {
+          cancelCount++;
+        },
+        getScheduledMiningCycleNotification: () => {
+          const last = scheduledAlarms[scheduledAlarms.length - 1];
+          return JSON.stringify({
+            cycleKey: last?.cycleKey ?? '',
+            triggerAtMs: last?.triggerAtEpochMs ?? 0,
+            notificationId: last?.notificationId ?? 0,
+            lastDeliveredCycleKey: '',
+          });
+        },
+      },
+    };
+
+    // Unauthenticated call must not prompt
+    const unauthPerm = await requestNotificationPermissionAfterSignIn(false);
+    assert.strictEqual(unauthPerm, 'denied');
+    assert.strictEqual(requestPermCalls, 0, 'Must not prompt before user authenticates');
+
+    // First authenticated sign-in prompts once
+    const firstPerm = await requestNotificationPermissionAfterSignIn(true);
+    assert.strictEqual(firstPerm, 'requested');
+    assert.strictEqual(requestPermCalls, 1, 'Must prompt once after first sign-in');
+
+    // Subsequent sign-ins after denial must respect user decision and not prompt again
+    const secondPerm = await requestNotificationPermissionAfterSignIn(true);
+    assert.strictEqual(secondPerm, 'denied');
+    assert.strictEqual(requestPermCalls, 1, 'Must not re-prompt after user denied permission');
+
+    // Schedule from authoritative server timestamp nextMiningAvailableAt
+    const serverNow = Date.now();
+    const authoritativeEnd = serverNow + 3600 * 1000;
+    const activeStatus = {
+      success: true,
+      status: 'mining' as const,
+      isCooldownActive: true,
+      remainingSeconds: 3600,
+      nextMiningAvailableAt: authoritativeEnd,
+      currentCycleStartTime: serverNow,
+      lastMinedAt: serverNow,
+      totalCyclesCompleted: 4,
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0,
+      totalMiningRate: 0.12,
+      activeReferralsCount: 0,
+      serverTime: serverNow,
+    };
+
+    await syncMiningCycleNotification(activeStatus, 'usr_g_b7d1e0d22f16c08b');
+    assert.strictEqual(scheduledAlarms.length, 1, 'Must schedule 1 notification for active cycle');
+    assert.strictEqual(scheduledAlarms[0].triggerAtEpochMs, authoritativeEnd, 'Must use exact server nextMiningAvailableAt');
+    assert.strictEqual(scheduledAlarms[0].title, 'Mining cycle completed 🎉');
+    assert.strictEqual(scheduledAlarms[0].cycleKey, buildCycleNotificationKey(authoritativeEnd, 'usr_g_b7d1e0d22f16c08b'));
+    assert.strictEqual(scheduledAlarms[0].notificationId, deriveCycleNotificationId(authoritativeEnd));
+
+    // Re-syncing the same active cycle on app resume must NOT schedule a duplicate notification
+    await syncMiningCycleNotification(activeStatus, 'usr_g_b7d1e0d22f16c08b');
+    assert.strictEqual(scheduledAlarms.length, 1, 'Must prevent duplicate notifications for the same cycle');
+
+    // When cycle completes on server, pending notification is cancelled
+    await syncMiningCycleNotification(
+      {
+        ...activeStatus,
+        status: 'available',
+        isCooldownActive: false,
+        remainingSeconds: 0,
+        serverTime: authoritativeEnd + 1000,
+      },
+      'usr_g_b7d1e0d22f16c08b'
+    );
+    assert(cancelCount >= 1, 'Must cancel pending notification when cycle is complete');
+
+    delete (globalThis as any).window;
+    delete (globalThis as any).localStorage;
+  });
+
   // Clean up all temporary test users so only real accounts remain in /data/coinpulse_database.json
   db.cleanupTestArtifacts(true);
 

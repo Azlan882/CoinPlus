@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Shield, Sparkles, AlertCircle, CheckCircle2, HelpCircle } from 'lucide-react';
+import { X, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { api, getApiBaseUrl, isNativeCapacitorOrigin } from '../api.ts';
 import { User, BalanceState, MiningStatusResponse } from '../types.ts';
 
@@ -15,12 +15,31 @@ declare global {
       getPersistedCheckpoint?: () => string;
       setPersistedCheckpoint?: (ckpt: string) => void;
       clearPersistedSession?: () => void;
+      getNotificationPermissionStatus?: () => string;
+      requestNotificationPermissionOnce?: () => string;
+      scheduleMiningCycleNotification?: (
+        cycleKey: string,
+        triggerAtEpochMs: number,
+        notificationId: number,
+        title: string,
+        body: string
+      ) => boolean;
+      cancelMiningCycleNotification?: () => void;
+      getScheduledMiningCycleNotification?: () => string;
+      consumeNotificationTap?: () => string;
     };
     __COINPULSE_DEEP_LINK_AUTH__?: {
       token?: string;
       sid?: string;
       ckpt?: string;
       error?: string;
+    };
+    __COINPULSE_NOTIFICATION_TAP__?: {
+      tapped?: boolean;
+      targetTab?: string;
+      cycleKey?: string;
+      cycleEndMs?: number;
+      timestamp?: number;
     };
   }
 }
@@ -80,12 +99,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [googleClientId, setGoogleClientId] = useState<string>(
     '705048511305-64rki2ql9ishnriq7g1o4sbdbsdclgi7.apps.googleusercontent.com'
   );
-  const [hasGoogleClientId, setHasGoogleClientId] = useState<boolean | null>(true);
+  const [, setHasGoogleClientId] = useState<boolean | null>(true);
   const [authSessionId, setAuthSessionId] = useState<string>(() => generateClientAuthSessionId());
   const [prefetchedAuthUrl, setPrefetchedAuthUrl] = useState<string>('');
-  const [showConfigHelp, setShowConfigHelp] = useState(false);
-  const [manualToken, setManualToken] = useState('');
-  const [showManualInput, setShowManualInput] = useState(false);
 
   const completedRef = useRef(false);
   const referralCodeRef = useRef(referralCode);
@@ -599,7 +615,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-white">Sign In to CoinPulse</h2>
-              <p className="text-[11px] text-slate-400">Authentication powered exclusively by Google</p>
+              <p className="text-xs text-slate-400">Sign in securely with your Google account</p>
             </div>
           </div>
           <button
@@ -608,12 +624,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           >
             <X className="w-4 h-4" />
           </button>
-        </div>
-
-        {/* Security Assurance Badge */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300">
-          <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>OAuth 2.0 / OpenID Connect verified on server with persistent Google Subject ID.</span>
         </div>
 
         {error && (
@@ -700,84 +710,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             >
               Cancel / Retry Google Sign-In
             </button>
-          )}
-        </div>
-
-        {/* Informational Notes */}
-        <div className="pt-2 border-t border-slate-800/80 space-y-2">
-          <div className="flex items-center justify-between text-[11px] text-slate-400">
-            <span>First time? Your miner account is created automatically.</span>
-            {hasGoogleClientId !== null && (
-              <span
-                className={`px-1.5 py-0.5 rounded font-mono text-[9px] uppercase ${
-                  hasGoogleClientId
-                    ? 'bg-emerald-950/70 border border-emerald-800/60 text-emerald-300'
-                    : 'bg-amber-950/70 border border-amber-800/60 text-amber-300'
-                }`}
-              >
-                {hasGoogleClientId ? 'OAuth Ready' : 'Config Missing'}
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between text-[11px]">
-            <button
-              type="button"
-              onClick={() => setShowConfigHelp(!showConfigHelp)}
-              className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 text-[11px]"
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-              <span>Google OAuth Setup Info</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowManualInput(!showManualInput)}
-              className="text-slate-400 hover:text-slate-200 text-[10px] underline"
-            >
-              Manual token input
-            </button>
-          </div>
-
-          {showManualInput && (
-            <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs">
-              <label className="text-[10px] uppercase font-mono text-slate-400 block">
-                Google ID Token or Access Token
-              </label>
-              <textarea
-                rows={2}
-                placeholder="Paste Google JWT id_token (e.g. eyJhbGci...)"
-                value={manualToken}
-                onChange={(e) => setManualToken(e.target.value)}
-                className="w-full px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
-              />
-              <button
-                type="button"
-                onClick={() => handleGoogleTokenSubmit(manualToken)}
-                disabled={isLoading || !manualToken.trim()}
-                className="w-full py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-slate-950 font-bold text-xs"
-              >
-                Verify &amp; Sign In with Token
-              </button>
-            </div>
-          )}
-
-          {showConfigHelp && (
-            <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-[11px] text-slate-300 space-y-1.5">
-              <div className="font-semibold text-white flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Google Cloud OAuth 2.0 Credentials:</span>
-              </div>
-              <p className="text-[10px] text-slate-400 leading-relaxed break-all">
-                1. Set <code className="text-cyan-300 font-mono">GOOGLE_CLIENT_ID</code> to your <strong>Web application</strong> OAuth Client ID (not the Android Client ID).
-                <br />
-                2. Add these exact <strong>Authorized redirect URIs</strong> to your Web Client in Google Cloud Console:
-                <br />
-                <code className="text-cyan-300 font-mono">https://ais-dev-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app/auth/callback</code>
-                <br />
-                <code className="text-cyan-300 font-mono">https://ais-pre-syd2tyn4om2bm3ebxwejob-600047491917.asia-southeast1.run.app/auth/callback</code>
-              </p>
-            </div>
           )}
         </div>
       </div>

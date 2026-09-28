@@ -1,14 +1,21 @@
 package com.coinpulse.mining;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.PluginHandle;
 import org.json.JSONObject;
 
 public class MainActivity extends BridgeActivity {
@@ -16,11 +23,16 @@ public class MainActivity extends BridgeActivity {
     private static final String PREFS_NAME = "CoinPulseAuthPrefs";
     private static final String KEY_TOKEN = "coinpulse_session_token";
     private static final String KEY_CKPT = "coinpulse_state_checkpoint";
+    private static final int REQ_CODE_POST_NOTIFICATIONS = 5021;
 
     private String pendingToken = "";
     private String pendingSid = "";
     private String pendingCkpt = "";
     private String pendingError = "";
+
+    private boolean pendingNotificationTap = false;
+    private String pendingNotificationCycleKey = "";
+    private long pendingNotificationCycleEndMs = 0L;
 
     private SharedPreferences getAuthPrefs() {
         return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -28,10 +40,13 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(LocalNotificationsPlugin.class);
         super.onCreate(savedInstanceState);
+        MiningNotificationReceiver.ensureNotificationChannel(this);
         configureWebViewCookies();
         registerNativeBridge();
         handleDeepLinkIntent(getIntent());
+        handleNotificationIntent(getIntent());
     }
 
     @Override
@@ -39,6 +54,7 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleDeepLinkIntent(intent);
+        handleNotificationIntent(intent);
     }
 
     @Override
@@ -210,6 +226,223 @@ public class MainActivity extends BridgeActivity {
                 return "{}";
             }
         }
+
+        @JavascriptInterface
+        public String getNotificationPermissionStatus() {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    int perm = ContextCompat.checkSelfPermission(
+                        MainActivity.this,
+                        Manifest.permission.POST_NOTIFICATIONS
+                    );
+                    if (perm == PackageManager.PERMISSION_GRANTED) {
+                        return NotificationManagerCompat.from(MainActivity.this).areNotificationsEnabled()
+                            ? "granted"
+                            : "denied";
+                    }
+                    boolean alreadyPrompted = getAuthPrefs().getBoolean(
+                        LocalNotificationsPlugin.KEY_NOTIFICATION_PERMISSION_PROMPTED,
+                        false
+                    );
+                    return alreadyPrompted ? "denied" : "prompt";
+                }
+                return NotificationManagerCompat.from(MainActivity.this).areNotificationsEnabled()
+                    ? "granted"
+                    : "denied";
+            } catch (Exception e) {
+                return "denied";
+            }
+        }
+
+        @JavascriptInterface
+        public String requestNotificationPermissionOnce() {
+            try {
+                MiningNotificationReceiver.ensureNotificationChannel(MainActivity.this);
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                    return NotificationManagerCompat.from(MainActivity.this).areNotificationsEnabled()
+                        ? "granted"
+                        : "denied";
+                }
+
+                int perm = ContextCompat.checkSelfPermission(
+                    MainActivity.this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                );
+                if (perm == PackageManager.PERMISSION_GRANTED) {
+                    return "granted";
+                }
+
+                SharedPreferences prefs = getAuthPrefs();
+                if (prefs.getBoolean(LocalNotificationsPlugin.KEY_NOTIFICATION_PERMISSION_PROMPTED, false)) {
+                    return "denied";
+                }
+
+                prefs.edit()
+                    .putBoolean(LocalNotificationsPlugin.KEY_NOTIFICATION_PERMISSION_PROMPTED, true)
+                    .apply();
+
+                runOnUiThread(() -> {
+                    try {
+                        ActivityCompat.requestPermissions(
+                            MainActivity.this,
+                            new String[] { Manifest.permission.POST_NOTIFICATIONS },
+                            REQ_CODE_POST_NOTIFICATIONS
+                        );
+                    } catch (Exception ignored) {
+                    }
+                });
+                return "requested";
+            } catch (Exception e) {
+                return "denied";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean scheduleMiningCycleNotification(
+            final String cycleKey,
+            final long triggerAtEpochMs,
+            final int notificationId,
+            final String title,
+            final String body
+        ) {
+            try {
+                return MiningNotificationReceiver.scheduleAlarm(
+                    MainActivity.this,
+                    cycleKey,
+                    triggerAtEpochMs,
+                    notificationId > 0 ? notificationId : 100101,
+                    title,
+                    body
+                );
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void cancelMiningCycleNotification() {
+            try {
+                MiningNotificationReceiver.cancelScheduledAlarm(MainActivity.this);
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public String getScheduledMiningCycleNotification() {
+            try {
+                SharedPreferences prefs = getAuthPrefs();
+                JSONObject obj = new JSONObject();
+                obj.put(
+                    "cycleKey",
+                    prefs.getString(MiningNotificationReceiver.KEY_SCHEDULED_CYCLE_KEY, "")
+                );
+                obj.put(
+                    "triggerAtMs",
+                    prefs.getLong(MiningNotificationReceiver.KEY_SCHEDULED_TRIGGER_AT, 0L)
+                );
+                obj.put(
+                    "notificationId",
+                    prefs.getInt(MiningNotificationReceiver.KEY_SCHEDULED_NOTIF_ID, 0)
+                );
+                obj.put(
+                    "lastDeliveredCycleKey",
+                    prefs.getString(MiningNotificationReceiver.KEY_LAST_DELIVERED_CYCLE_KEY, "")
+                );
+                return obj.toString();
+            } catch (Exception e) {
+                return "{}";
+            }
+        }
+
+        @JavascriptInterface
+        public String consumeNotificationTap() {
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("tapped", pendingNotificationTap);
+                obj.put("cycleKey", pendingNotificationCycleKey != null ? pendingNotificationCycleKey : "");
+                obj.put("cycleEndMs", pendingNotificationCycleEndMs);
+                obj.put("targetTab", "mining");
+                pendingNotificationTap = false;
+                pendingNotificationCycleKey = "";
+                pendingNotificationCycleEndMs = 0L;
+                return obj.toString();
+            } catch (Exception e) {
+                return "{\"tapped\":false}";
+            }
+        }
+    }
+
+    private void handleNotificationIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        boolean fromMiningNotification = false;
+        try {
+            fromMiningNotification = intent.getBooleanExtra("from_mining_notification", false);
+        } catch (Exception ignored) {
+        }
+        if (!fromMiningNotification) {
+            return;
+        }
+
+        final String cycleKey = intent.getStringExtra("cycle_key") != null
+            ? intent.getStringExtra("cycle_key")
+            : "";
+        final long cycleEndMs = intent.getLongExtra("cycle_end_ms", 0L);
+
+        // Clear extra so reopening from Recents does not replay the notification tap
+        try {
+            intent.removeExtra("from_mining_notification");
+            setIntent(intent);
+        } catch (Exception ignored) {
+        }
+
+        this.pendingNotificationTap = true;
+        this.pendingNotificationCycleKey = cycleKey;
+        this.pendingNotificationCycleEndMs = cycleEndMs;
+
+        if (this.bridge != null) {
+            try {
+                PluginHandle handle = this.bridge.getPlugin("LocalNotifications");
+                if (handle != null && handle.getInstance() instanceof LocalNotificationsPlugin) {
+                    ((LocalNotificationsPlugin) handle.getInstance())
+                        .notifyNotificationTapped(cycleKey, cycleEndMs);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        if (this.bridge == null || this.bridge.getWebView() == null) {
+            return;
+        }
+
+        final WebView webView = this.bridge.getWebView();
+        int[] delays = new int[] { 100, 500, 1200 };
+        for (int delay : delays) {
+            webView.postDelayed(() -> {
+                try {
+                    JSONObject detail = new JSONObject();
+                    detail.put("tapped", true);
+                    detail.put("targetTab", "mining");
+                    detail.put("cycleKey", cycleKey);
+                    detail.put("cycleEndMs", cycleEndMs);
+                    detail.put("timestamp", System.currentTimeMillis());
+
+                    StringBuilder js = new StringBuilder();
+                    js.append("(function(){");
+                    js.append("window.__COINPULSE_NOTIFICATION_TAP__ = ")
+                      .append(detail.toString())
+                      .append(";");
+                    js.append("window.dispatchEvent(new CustomEvent('coinpulse-notification-tap', { detail: ")
+                      .append(detail.toString())
+                      .append(" }));");
+                    js.append("})();");
+
+                    webView.evaluateJavascript(js.toString(), null);
+                } catch (Exception ignored) {
+                }
+            }, delay);
+        }
     }
 
     private void handleDeepLinkIntent(Intent intent) {
@@ -295,4 +528,3 @@ public class MainActivity extends BridgeActivity {
         }
     }
 }
-

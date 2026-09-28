@@ -11,6 +11,7 @@ interface MiningCircleProps {
   bonusRate: number;
   remainingSeconds: number;
   isMiningLoading: boolean;
+  isSyncing?: boolean;
   onMineClick: () => void;
   serverSyncTime: number;
   nextMiningAvailableAt?: number;
@@ -26,31 +27,36 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
   bonusRate,
   remainingSeconds,
   isMiningLoading,
+  isSyncing = false,
   onMineClick,
   nextMiningAvailableAt = 0,
   cycleStartTime = null,
   serverClockOffsetMs = 0,
   resumeSyncTick = 0,
 }) => {
-  // Real-time interpolated earnings & cycle progress derived directly from authoritative server timestamps
-  const [accumulatedEarned, setAccumulatedEarned] = useState<number>(0);
-  const [liveProgressRatio, setLiveProgressRatio] = useState<number>(0);
+  // Pure display tick counter so the component re-renders smoothly from authoritative timestamps
+  const [, setDisplayTick] = useState<number>(0);
 
   // Total cycle duration is 3600 seconds (1 hour)
   const totalCycleSeconds = 3600;
   const totalCycleMs = totalCycleSeconds * 1000;
 
-  // Compute exact progress ratio from authoritative server timestamps (currentTime - cycleStartTime)
+  // Compute exact progress ratio and remaining seconds from authoritative server timestamps (endTime - now)
   const computeCycleMetrics = () => {
+    if (isSyncing) {
+      return { ratio: 0, earned: 0, remSec: 0 };
+    }
     if (status === 'available') {
-      return { ratio: 1, earned: Number(currentMiningRate.toFixed(4)) };
+      return { ratio: 1, earned: Number(currentMiningRate.toFixed(4)), remSec: 0 };
     }
     if (status !== 'mining') {
-      return { ratio: 0, earned: 0 };
+      return { ratio: 0, earned: 0, remSec: 0 };
     }
 
     const nowServerMs = Date.now() + serverClockOffsetMs;
     if (nextMiningAvailableAt > 0) {
+      const remainingMs = Math.max(0, nextMiningAvailableAt - nowServerMs);
+      const remSec = Math.ceil(remainingMs / 1000);
       const effectiveStartMs =
         cycleStartTime && nextMiningAvailableAt > cycleStartTime
           ? cycleStartTime
@@ -59,18 +65,18 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
       const elapsedMs = Math.max(0, Math.min(durationMs, nowServerMs - effectiveStartMs));
       const ratio = Math.min(1, Math.max(0, elapsedMs / durationMs));
       const earned = Number((ratio * currentMiningRate).toFixed(6));
-      return { ratio, earned };
+      return { ratio, earned, remSec };
     }
 
-    const elapsedSeconds = Math.max(0, Math.min(totalCycleSeconds, totalCycleSeconds - remainingSeconds));
+    const remSec = Math.max(0, remainingSeconds);
+    const elapsedSeconds = Math.max(0, Math.min(totalCycleSeconds, totalCycleSeconds - remSec));
     const ratio = elapsedSeconds / totalCycleSeconds;
     const earned = Number((ratio * currentMiningRate).toFixed(6));
-    return { ratio, earned };
+    return { ratio, earned, remSec };
   };
 
-  const fallbackElapsedSeconds = Math.max(0, Math.min(totalCycleSeconds, totalCycleSeconds - remainingSeconds));
-  const fallbackRatio = status === 'mining' ? fallbackElapsedSeconds / totalCycleSeconds : status === 'available' ? 1 : 0;
-  const progressRatio = status === 'mining' ? liveProgressRatio || fallbackRatio : fallbackRatio;
+  const { ratio: progressRatio, earned: accumulatedEarned, remSec: effectiveRemainingSeconds } =
+    computeCycleMetrics();
   const progressPercent = Math.min(100, Math.max(0, progressRatio * 100));
 
   // Circumference for 260px diameter (r = 115)
@@ -78,30 +84,17 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (circumference * progressPercent) / 100;
 
-  // Timestamp-driven synchronization for progress arc & earned counter (never accumulates via prev + delta)
+  // Display-only interval trigger (never mutates source-of-truth timestamps)
   useEffect(() => {
-    const syncFromTimestamps = () => {
-      const { ratio, earned } = computeCycleMetrics();
-      setLiveProgressRatio(ratio);
-      setAccumulatedEarned(earned);
-    };
-
-    syncFromTimestamps();
-
-    if (status === 'mining') {
+    if (status === 'mining' && !isSyncing) {
       const interval = window.setInterval(() => {
-        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-          return;
-        }
-        syncFromTimestamps();
+        setDisplayTick((t) => (t + 1) % 1000000);
       }, 250);
-
       return () => window.clearInterval(interval);
     }
   }, [
+    isSyncing,
     status,
-    remainingSeconds,
-    currentMiningRate,
     nextMiningAvailableAt,
     cycleStartTime,
     serverClockOffsetMs,
@@ -110,15 +103,15 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
 
   // Format countdown HH:MM:SS
   const formattedCountdown = useMemo(() => {
-    if (remainingSeconds <= 0) return '00:00:00';
-    const h = Math.floor(remainingSeconds / 3600);
-    const m = Math.floor((remainingSeconds % 3600) / 60);
-    const s = remainingSeconds % 60;
+    if (effectiveRemainingSeconds <= 0) return '00:00:00';
+    const h = Math.floor(effectiveRemainingSeconds / 3600);
+    const m = Math.floor((effectiveRemainingSeconds % 3600) / 60);
+    const s = effectiveRemainingSeconds % 60;
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  }, [remainingSeconds]);
+  }, [effectiveRemainingSeconds]);
 
   const handleAction = () => {
-    if (isMiningLoading) return;
+    if (isMiningLoading || isSyncing) return;
     if (status === 'mining') {
       sounds.playCooldownBuzz();
       return;
@@ -142,7 +135,12 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
     <div className="flex flex-col items-center justify-center select-none w-full max-w-sm mx-auto px-4">
       {/* Top Status Pill */}
       <div className="mb-4 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/80 border border-slate-800 backdrop-blur-md shadow-inner text-xs font-medium">
-        {status === 'mining' ? (
+        {isSyncing ? (
+          <>
+            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+            <span className="text-cyan-300 font-semibold tracking-wide">SYNCING SERVER STATE...</span>
+          </>
+        ) : status === 'mining' ? (
           <>
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
             <span className="text-emerald-400 font-semibold tracking-wide">CYCLE IN PROGRESS</span>
@@ -167,7 +165,9 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
         {/* Ambient Outer Glow Aura */}
         <div
           className={`absolute inset-4 rounded-full transition-all duration-700 blur-2xl opacity-40 pointer-events-none ${
-            status === 'mining'
+            isSyncing
+              ? 'bg-cyan-500/20'
+              : status === 'mining'
               ? 'bg-emerald-500/30'
               : status === 'available'
               ? 'bg-amber-500/35'
@@ -220,10 +220,12 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
         {/* Interactive Center Core */}
         <button
           onClick={handleAction}
-          disabled={status === 'mining' || isMiningLoading}
-          aria-label={status === 'mining' ? 'Mining in progress' : 'Mine Coins'}
+          disabled={isSyncing || status === 'mining' || isMiningLoading}
+          aria-label={isSyncing ? 'Syncing mining status' : status === 'mining' ? 'Mining in progress' : 'Mine Coins'}
           className={`relative z-10 w-52 h-52 sm:w-56 sm:h-56 rounded-full flex flex-col items-center justify-center p-3 text-center transition-all duration-300 transform active:scale-95 focus:outline-none ${
-            status === 'mining'
+            isSyncing
+              ? 'bg-gradient-to-b from-[#0e172a] via-[#091122] to-[#050b17] border-2 border-cyan-500/30 shadow-lg shadow-cyan-950/30 cursor-wait'
+              : status === 'mining'
               ? 'bg-gradient-to-b from-[#0e172a] via-[#091122] to-[#050b17] border-2 border-emerald-500/40 shadow-lg shadow-emerald-950/40 cursor-default'
               : status === 'available'
               ? 'bg-gradient-to-b from-amber-950/40 via-[#0d1424] to-[#080d19] border-2 border-amber-500/60 shadow-xl shadow-amber-500/20 hover:border-amber-400 cursor-pointer animate-pulse-ring'
@@ -231,7 +233,7 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
           }`}
         >
           {/* Subtle spinning particle halo when mining */}
-          {status === 'mining' && (
+          {!isSyncing && status === 'mining' && (
             <div className="absolute inset-2 rounded-full border border-emerald-400/20 animate-orbit-slow pointer-events-none">
               <span className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-emerald-400 rounded-full shadow-lg shadow-emerald-400/80" />
             </div>
@@ -239,7 +241,7 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
 
           {/* Core Icon */}
           <div className="mb-1.5 transition-transform duration-300">
-            {isMiningLoading ? (
+            {isSyncing || isMiningLoading ? (
               <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
             ) : status === 'mining' ? (
               <div className="relative">
@@ -258,7 +260,12 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
 
           {/* Primary Action Label */}
           <div className="text-center font-bold tracking-wider">
-            {isMiningLoading ? (
+            {isSyncing ? (
+              <div className="flex flex-col items-center">
+                <span className="text-sm text-cyan-300 tracking-widest uppercase">SYNCING...</span>
+                <span className="text-[11px] text-slate-400 font-normal mt-0.5">Loading live timer</span>
+              </div>
+            ) : isMiningLoading ? (
               <span className="text-sm text-cyan-300">AUTHORIZING...</span>
             ) : status === 'mining' ? (
               <div className="flex flex-col items-center">

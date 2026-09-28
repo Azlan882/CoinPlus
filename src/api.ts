@@ -150,7 +150,11 @@ class ApiService {
       if (!raw) return null;
       const parsed = JSON.parse(raw) as CachedUserSession;
       if (parsed && parsed.user && parsed.user.id) {
-        return parsed;
+        // Never return a cached miningState: timer state must always come from live GET /api/mining/status
+        return {
+          ...parsed,
+          miningState: null,
+        };
       }
     } catch {}
     return null;
@@ -160,7 +164,15 @@ class ApiService {
     if (typeof window === 'undefined') return;
     try {
       if (session && session.user) {
-        localStorage.setItem(CACHED_SESSION_KEY, JSON.stringify(session));
+        localStorage.setItem(
+          CACHED_SESSION_KEY,
+          JSON.stringify({
+            user: session.user,
+            balance: session.balance,
+            miningState: null,
+            updatedAt: session.updatedAt || Date.now(),
+          })
+        );
       } else {
         localStorage.removeItem(CACHED_SESSION_KEY);
       }

@@ -30,13 +30,117 @@
       "bonusMiningRate": 0,
       "totalMiningRate": 0.12,
       "createdAt": "2026-09-25T12:00:00.000Z",
-      "lastLoginAt": "2026-09-27T07:10:49.047Z",
-      "lastActiveAt": "2026-09-27T07:32:35.944Z",
+      "lastLoginAt": "2026-09-27T08:09:03.749Z",
+      "lastActiveAt": "2026-09-28T14:56:36.949Z",
       "googleId": "110989942788351733924",
       "picture": "https://lh3.googleusercontent.com/a/ACg8ocKnyOmDX0w7jl6tkBSfkRAZWVRgJrUvuNLwqLyyBbTHdjf0Jw=s96-c"
     }
   },
   "miningSessions": [
+    {
+      "id": "ses_1790606218319_11_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 11,
+      "cycleStartTime": 1790606218319,
+      "cycleEndTime": 1790609818319,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-28T14:36:58.320Z"
+    },
+    {
+      "id": "ses_1790602613966_10_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 10,
+      "cycleStartTime": 1790602613966,
+      "cycleEndTime": 1790606213966,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-28T13:36:53.966Z"
+    },
+    {
+      "id": "ses_1790577941263_9_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 9,
+      "cycleStartTime": 1790577941263,
+      "cycleEndTime": 1790581541263,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-28T06:45:41.263Z"
+    },
+    {
+      "id": "ses_1790527128807_8_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 8,
+      "cycleStartTime": 1790527128807,
+      "cycleEndTime": 1790530728807,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-27T16:38:48.808Z"
+    },
+    {
+      "id": "ses_1790523164897_7_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 7,
+      "cycleStartTime": 1790523164897,
+      "cycleEndTime": 1790526764897,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-27T15:32:44.898Z"
+    },
+    {
+      "id": "ses_1790518778968_6_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 6,
+      "cycleStartTime": 1790518778968,
+      "cycleEndTime": 1790522378968,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-27T14:19:38.969Z"
+    },
+    {
+      "id": "ses_1790502552010_5_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 5,
+      "cycleStartTime": 1790502552010,
+      "cycleEndTime": 1790506152010,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-27T09:49:12.010Z"
+    },
+    {
+      "id": "ses_1790496551632_4_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 4,
+      "cycleStartTime": 1790496551632,
+      "cycleEndTime": 1790500151632,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-27T08:09:11.633Z"
+    },
     {
       "id": "ses_restored_3_shahraiz",
       "userId": "usr_g_b7d1e0d22f16c08b",
@@ -88,11 +192,11 @@
     },
     "usr_g_b7d1e0d22f16c08b": {
       "userId": "usr_g_b7d1e0d22f16c08b",
-      "isMiningActive": false,
-      "currentCycleStartTime": 1758943600000,
-      "lastMinedAt": 1758943600000,
-      "nextMiningAvailableAt": 1758950800000,
-      "totalCyclesCompleted": 3
+      "isMiningActive": true,
+      "currentCycleStartTime": 1790606218319,
+      "lastMinedAt": 1790606218319,
+      "nextMiningAvailableAt": 1790609818319,
+      "totalCyclesCompleted": 11
     }
   },
   "balances": {
@@ -106,16 +210,104 @@
     },
     "usr_g_b7d1e0d22f16c08b": {
       "userId": "usr_g_b7d1e0d22f16c08b",
-      "totalBalance": 0.36,
-      "totalMined": 0.36,
+      "totalBalance": 1.32,
+      "totalMined": 1.32,
       "totalReferralBonus": 0,
-      "lastCalculatedAt": "2026-09-27T07:10:49.007Z",
-      "integrityChecksum": "64cf23a697e89bcb8f0020eec5e6c5b383c4bc39f23293a7c16ef756a8e63fd1"
+      "lastCalculatedAt": "2026-09-28T14:36:58.319Z",
+      "integrityChecksum": "b2fed0732ac14822c660b53528d7de93dd31f952c7f8437b32bcf8aba2b69319"
     }
   },
   "referrals": [],
   "rateHistory": [],
   "transactions": [
+    {
+      "id": "tx_1790606218319_a642232c",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 1.2,
+      "balanceAfter": 1.32,
+      "referenceId": "ses_1790606218319_11_16c08b",
+      "description": "Hourly mining cycle #11 completed (+0.12 CP)",
+      "timestamp": "2026-09-28T14:36:58.320Z"
+    },
+    {
+      "id": "tx_1790602613966_ff93b20e",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 1.08,
+      "balanceAfter": 1.2,
+      "referenceId": "ses_1790602613966_10_16c08b",
+      "description": "Hourly mining cycle #10 completed (+0.12 CP)",
+      "timestamp": "2026-09-28T13:36:53.966Z"
+    },
+    {
+      "id": "tx_1790577941263_4558b358",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0.96,
+      "balanceAfter": 1.08,
+      "referenceId": "ses_1790577941263_9_16c08b",
+      "description": "Hourly mining cycle #9 completed (+0.12 CP)",
+      "timestamp": "2026-09-28T06:45:41.263Z"
+    },
+    {
+      "id": "tx_1790527128807_41f21c7b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0.84,
+      "balanceAfter": 0.96,
+      "referenceId": "ses_1790527128807_8_16c08b",
+      "description": "Hourly mining cycle #8 completed (+0.12 CP)",
+      "timestamp": "2026-09-27T16:38:48.807Z"
+    },
+    {
+      "id": "tx_1790523164897_94347128",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0.72,
+      "balanceAfter": 0.84,
+      "referenceId": "ses_1790523164897_7_16c08b",
+      "description": "Hourly mining cycle #7 completed (+0.12 CP)",
+      "timestamp": "2026-09-27T15:32:44.897Z"
+    },
+    {
+      "id": "tx_1790518778968_bed488be",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0.6,
+      "balanceAfter": 0.72,
+      "referenceId": "ses_1790518778968_6_16c08b",
+      "description": "Hourly mining cycle #6 completed (+0.12 CP)",
+      "timestamp": "2026-09-27T14:19:38.969Z"
+    },
+    {
+      "id": "tx_1790502552010_fed8f1a6",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0.48,
+      "balanceAfter": 0.6,
+      "referenceId": "ses_1790502552010_5_16c08b",
+      "description": "Hourly mining cycle #5 completed (+0.12 CP)",
+      "timestamp": "2026-09-27T09:49:12.010Z"
+    },
+    {
+      "id": "tx_1790496551633_99b8fe65",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 0.36,
+      "balanceAfter": 0.48,
+      "referenceId": "ses_1790496551632_4_16c08b",
+      "description": "Hourly mining cycle #4 completed (+0.12 CP)",
+      "timestamp": "2026-09-27T08:09:11.633Z"
+    },
     {
       "id": "tx_restored_3_shahraiz",
       "userId": "usr_g_b7d1e0d22f16c08b",
