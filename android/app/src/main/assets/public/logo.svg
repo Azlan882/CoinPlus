@@ -1,0 +1,233 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    
+        <clipPath id="iconClip">
+          <rect x="28" y="28" width="968" height="968" rx="224" ry="224" />
+        </clipPath>
+        
+
+    <!-- Dark Navy Background Gradients -->
+    <radialGradient id="bgRadialGlow" cx="48%" cy="46%" r="56%" fx="45%" fy="43%">
+      <stop offset="0%" stop-color="#173B8A" stop-opacity="0.95" />
+      <stop offset="42%" stop-color="#0B1F52" stop-opacity="0.95" />
+      <stop offset="75%" stop-color="#040C24" stop-opacity="1" />
+      <stop offset="100%" stop-color="#020511" stop-opacity="1" />
+    </radialGradient>
+
+    <linearGradient id="bgTopLeftSheen" x1="0%" y1="0%" x2="85%" y2="85%">
+      <stop offset="0%" stop-color="#1D4ED8" stop-opacity="0.28" />
+      <stop offset="45%" stop-color="#0A193B" stop-opacity="0.05" />
+      <stop offset="100%" stop-color="#01030A" stop-opacity="0.45" />
+    </linearGradient>
+
+    <radialGradient id="innerWellGrad" cx="46%" cy="42%" r="58%">
+      <stop offset="0%" stop-color="#1A3F8F" stop-opacity="0.85" />
+      <stop offset="65%" stop-color="#091A45" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#030A1F" stop-opacity="0.98" />
+    </radialGradient>
+
+    <linearGradient id="rimBorderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.65" />
+      <stop offset="50%" stop-color="#1E3A8A" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="#020617" stop-opacity="0.8" />
+    </linearGradient>
+
+    <!-- Blue Orbit Gradients -->
+    <linearGradient id="orbitArcTopRight" x1="25%" y1="5%" x2="95%" y2="70%">
+      <stop offset="0%" stop-color="#0051FF" stop-opacity="0.08" />
+      <stop offset="22%" stop-color="#0088FF" stop-opacity="0.85" />
+      <stop offset="55%" stop-color="#22E4FF" stop-opacity="1" />
+      <stop offset="88%" stop-color="#0099FF" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#0051FF" stop-opacity="0.2" />
+    </linearGradient>
+
+    <linearGradient id="orbitArcBottomRight" x1="95%" y1="55%" x2="50%" y2="98%">
+      <stop offset="0%" stop-color="#0066FF" stop-opacity="0.2" />
+      <stop offset="45%" stop-color="#1AD6FF" stop-opacity="0.95" />
+      <stop offset="75%" stop-color="#0066FF" stop-opacity="0.75" />
+      <stop offset="100%" stop-color="#0033AA" stop-opacity="0.05" />
+    </linearGradient>
+
+    <linearGradient id="orbitArcLeft" x1="12%" y1="20%" x2="30%" y2="90%">
+      <stop offset="0%" stop-color="#0044CC" stop-opacity="0.08" />
+      <stop offset="35%" stop-color="#0099FF" stop-opacity="0.8" />
+      <stop offset="58%" stop-color="#2CE8FF" stop-opacity="1" />
+      <stop offset="85%" stop-color="#0077FF" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0033AA" stop-opacity="0.1" />
+    </linearGradient>
+
+    <radialGradient id="cyanNodeGrad" cx="35%" cy="30%" r="68%">
+      <stop offset="0%" stop-color="#B8FFFF" />
+      <stop offset="32%" stop-color="#2CE8FF" />
+      <stop offset="72%" stop-color="#0095FF" />
+      <stop offset="100%" stop-color="#0044CC" />
+    </radialGradient>
+
+    <radialGradient id="cyanNodeHalo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#19D8FF" stop-opacity="0.75" />
+      <stop offset="50%" stop-color="#0066FF" stop-opacity="0.32" />
+      <stop offset="100%" stop-color="#0033AA" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- 3D Metallic Gold Gradients -->
+    <!-- Outer/Bottom 3D Extrusion Wall (Dark Burnished Gold / Bronze) -->
+    <linearGradient id="goldExtrudeGrad" x1="15%" y1="10%" x2="85%" y2="90%">
+      <stop offset="0%" stop-color="#D97706" />
+      <stop offset="40%" stop-color="#B45309" />
+      <stop offset="75%" stop-color="#92400E" />
+      <stop offset="100%" stop-color="#78350F" />
+    </linearGradient>
+
+    <!-- Rich Main Metallic Gold Body -->
+    <linearGradient id="goldMainGrad" x1="18%" y1="12%" x2="82%" y2="88%">
+      <stop offset="0%" stop-color="#FFF099" />
+      <stop offset="18%" stop-color="#FFD43B" />
+      <stop offset="45%" stop-color="#F59E0B" />
+      <stop offset="72%" stop-color="#D97706" />
+      <stop offset="90%" stop-color="#FBBF24" />
+      <stop offset="100%" stop-color="#B45309" />
+    </linearGradient>
+
+    <!-- Top/Left Specular Bevel Face -->
+    <linearGradient id="goldBrightFaceGrad" x1="20%" y1="8%" x2="78%" y2="92%">
+      <stop offset="0%" stop-color="#FFF9C4" />
+      <stop offset="24%" stop-color="#FFE066" />
+      <stop offset="52%" stop-color="#FFC107" />
+      <stop offset="78%" stop-color="#F59E0B" />
+      <stop offset="100%" stop-color="#FFF099" />
+    </linearGradient>
+
+    <!-- Specular Rim Hotspots (Top-Left 11:00 and Bottom 6:00) -->
+    <radialGradient id="goldRimHotspotTopLeft" cx="31%" cy="24%" r="22%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.92" />
+      <stop offset="35%" stop-color="#FFF59D" stop-opacity="0.65" />
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="goldRimHotspotBottom" cx="50%" cy="81%" r="18%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.88" />
+      <stop offset="40%" stop-color="#FFF59D" stop-opacity="0.55" />
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Mask that carves the inner circle AND the signature horizontal right-side gap at y=[433..450] -->
+    <mask id="coinRingCutoutMask">
+      <rect x="0" y="0" width="1024" height="1024" fill="white" />
+      <circle cx="512" cy="512" r="256" fill="black" />
+      <!-- Crisp right-side gap above the right horizontal pulse bar -->
+      <rect x="735" y="431" width="135" height="18" rx="3" fill="black" />
+    </mask>
+
+    <mask id="coinRingHighlightMask">
+      <rect x="0" y="0" width="1024" height="1024" fill="white" />
+      <circle cx="512" cy="512" r="266" fill="black" />
+      <rect x="735" y="427" width="135" height="24" rx="3" fill="black" />
+    </mask>
+
+    <!-- Clip to keep the pulse wave cleanly inside the outer coin boundary -->
+    <clipPath id="outerCoinClip">
+      <circle cx="512" cy="512" r="329" />
+    </clipPath>
+  </defs>
+
+  
+        <g clip-path="url(#iconClip)">
+          <!-- Deep Dark Navy Base -->
+          <rect x="0" y="0" width="1024" height="1024" fill="#020614" />
+          <!-- Subtle Radial Navy-Blue Illumination -->
+          <rect x="0" y="0" width="1024" height="1024" fill="url(#bgRadialGlow)" />
+          <!-- Top-Left Ambient Navy Sheen -->
+          <rect x="0" y="0" width="1024" height="1024" fill="url(#bgTopLeftSheen)" />
+          <!-- Inner Coin Well Deep Navy Vignette -->
+          <circle cx="512" cy="512" r="268" fill="url(#innerWellGrad)" />
+          
+        <rect x="30" y="30" width="964" height="964" rx="222" ry="222"
+              fill="none" stroke="url(#rimBorderGrad)" stroke-width="5" opacity="0.65" />
+        
+        </g>
+        
+
+  <g >
+    <!-- ================= 1. GLOWING BLUE ORBIT RING & NODES ================= -->
+    <g>
+      <!-- Outer Ambient Blue Orbit Glow -->
+      <circle cx="512" cy="512" r="378" fill="none" stroke="#0066FF" stroke-width="26" opacity="0.18" />
+      <circle cx="512" cy="512" r="378" fill="none" stroke="#00AAFF" stroke-width="14" opacity="0.24" />
+
+      <!-- Top-Right Luminous Orbit Arc (from ~11:15 to ~3:35) -->
+      <path d="M 368 163 A 378 378 0 0 1 878 606"
+            fill="none" stroke="url(#orbitArcTopRight)" stroke-width="11" stroke-linecap="round" />
+
+      <!-- Bottom-Right Luminous Orbit Arc (from ~3:50 to ~6:15) -->
+      <path d="M 862 655 A 378 378 0 0 1 465 887"
+            fill="none" stroke="url(#orbitArcBottomRight)" stroke-width="9.5" stroke-linecap="round" />
+
+      <!-- Left Luminous Orbit Arc (from ~6:45 to ~10:35) -->
+      <path d="M 365 860 A 378 378 0 0 1 218 274"
+            fill="none" stroke="url(#orbitArcLeft)" stroke-width="10.5" stroke-linecap="round" />
+
+      <!-- Node 1: Top-Right Glowing Cyan Sphere (cx=768, cy=234) -->
+      <circle cx="768" cy="234" r="56" fill="url(#cyanNodeHalo)" />
+      <circle cx="768" cy="234" r="27" fill="url(#cyanNodeGrad)" />
+
+      <!-- Node 2: Middle-Left Glowing Cyan Sphere (cx=135, cy=535) -->
+      <circle cx="135" cy="535" r="48" fill="url(#cyanNodeHalo)" />
+      <circle cx="135" cy="535" r="22.5" fill="url(#cyanNodeGrad)" />
+
+      <!-- Node 3: Bottom-Right Glowing Cyan Sphere (cx=767, cy=763) -->
+      <circle cx="767" cy="763" r="50" fill="url(#cyanNodeHalo)" />
+      <circle cx="767" cy="763" r="24" fill="url(#cyanNodeGrad)" />
+    </g>
+
+    <!-- ================= 2. DEEP DROP SHADOW UNDER GOLD COIN & PULSE ================= -->
+    <g opacity="0.68" transform="translate(8, 16)">
+      <circle cx="512" cy="512" r="330" fill="#01040E" mask="url(#coinRingCutoutMask)" />
+      <path d="M 210 483 L 344 483 L 383 442 L 424 542 L 525 314 L 579 596 L 636 483 L 832 483"
+            fill="none" stroke="#01040E" stroke-width="74" stroke-linecap="butt" stroke-linejoin="round"
+            clip-path="url(#outerCoinClip)" />
+    </g>
+
+    <!-- ================= 3. 3D METALLIC GOLD COIN RING ================= -->
+    <!-- 3A. Lower/Outer 3D Bevel Extrusion of Coin Ring -->
+    <g transform="translate(4, 9)">
+      <circle cx="512" cy="512" r="330" fill="url(#goldExtrudeGrad)" mask="url(#coinRingCutoutMask)" />
+    </g>
+
+    <!-- 3B. Main Metallic Gold Ring Body -->
+    <circle cx="512" cy="512" r="329" fill="url(#goldMainGrad)" mask="url(#coinRingCutoutMask)" />
+
+    <!-- 3C. Inner Bevel Chamfer Ring (Dark Bronze-Gold Rim on Inside of Ring) -->
+    <circle cx="512" cy="512" r="261" fill="none" stroke="#92400E" stroke-width="10" opacity="0.85"
+            mask="url(#coinRingCutoutMask)" />
+
+    <!-- 3D. Raised Bright Gold Face of Coin Ring -->
+    <circle cx="512" cy="512" r="319" fill="url(#goldBrightFaceGrad)" mask="url(#coinRingHighlightMask)" />
+
+    <!-- 3E. Specular Rim Gleams at Top-Left (~11:00) and Bottom (~6:00) -->
+    <circle cx="512" cy="512" r="329" fill="url(#goldRimHotspotTopLeft)" mask="url(#coinRingCutoutMask)" />
+    <circle cx="512" cy="512" r="329" fill="url(#goldRimHotspotBottom)" mask="url(#coinRingCutoutMask)" />
+
+    <!-- ================= 4. 3D METALLIC GOLD PULSE WAVEFORM ================= -->
+    <g clip-path="url(#outerCoinClip)">
+      <!-- 4A. 3D Extruded Lower Bevel Wall of Pulse Wave -->
+      <path d="M 192 493 L 344 493 L 383 452 L 424 552 L 525 324 L 579 606 L 636 493 L 844 493"
+            fill="none" stroke="url(#goldExtrudeGrad)" stroke-width="68"
+            stroke-linecap="butt" stroke-linejoin="round" />
+
+      <!-- 4B. Main Rich Gold Body of Pulse Wave -->
+      <path d="M 192 482 L 344 482 L 383 441 L 424 541 L 525 313 L 579 595 L 636 482 L 844 482"
+            fill="none" stroke="url(#goldMainGrad)" stroke-width="66"
+            stroke-linecap="butt" stroke-linejoin="round" />
+
+      <!-- 4C. Raised Bright Champagne-Gold Top/Center Face of Pulse Wave -->
+      <path d="M 192 478 L 344 478 L 383 437 L 424 537 L 525 309 L 579 591 L 636 478 L 844 478"
+            fill="none" stroke="url(#goldBrightFaceGrad)" stroke-width="46"
+            stroke-linecap="butt" stroke-linejoin="round" />
+
+      <!-- 4D. Crisp Specular Highlight Ridge Along Top Edge of Pulse Wave -->
+      <path d="M 248 460 L 340 460 L 383 418 L 424 516 L 525 290 L 579 572 L 636 460 L 835 460"
+            fill="none" stroke="#FFF9C4" stroke-width="6" opacity="0.7"
+            stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+  </g>
+</svg>

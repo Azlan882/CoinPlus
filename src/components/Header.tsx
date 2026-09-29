@@ -28,11 +28,11 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
         {/* Brand */}
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 via-sky-500 to-emerald-400 p-[1px] shadow-lg shadow-cyan-500/20">
-            <div className="w-full h-full bg-[#080d1a] rounded-[11px] flex items-center justify-center">
-              <Zap className="w-5 h-5 text-cyan-400 fill-cyan-400/30" />
-            </div>
-          </div>
+          <img
+            src="/logo.png"
+            alt="CoinPulse"
+            className="w-9 h-9 rounded-xl object-contain shadow-lg shadow-blue-500/20 shrink-0"
+          />
           <div>
             <div className="flex items-center gap-1.5">
               <span className="font-extrabold tracking-tight text-white text-base sm:text-lg">
