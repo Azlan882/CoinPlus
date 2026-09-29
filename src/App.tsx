@@ -434,24 +434,30 @@ export default function App() {
     // Optional Capacitor App & LocalNotifications plugin listeners if present at runtime
     let capAppListener: any = null;
     let capNotifListener: any = null;
-    const capAppPlugin = (window as any).Capacitor?.Plugins?.App;
-    if (capAppPlugin && typeof capAppPlugin.addListener === 'function') {
-      try {
+    try {
+      const capAppPlugin = (window as any).Capacitor?.Plugins?.App;
+      if (capAppPlugin && typeof capAppPlugin.addListener === 'function') {
         capAppListener = capAppPlugin.addListener('appStateChange', (state: { isActive: boolean }) => {
           if (state?.isActive) {
             handleAppResume();
           }
         });
-      } catch {}
-    }
-    const capNotifPlugin = (window as any).Capacitor?.Plugins?.LocalNotifications;
-    if (capNotifPlugin && typeof capNotifPlugin.addListener === 'function') {
-      try {
+        if (capAppListener && typeof capAppListener.catch === 'function') {
+          capAppListener.catch(() => {});
+        }
+      }
+    } catch {}
+    try {
+      const capNotifPlugin = (window as any).Capacitor?.Plugins?.LocalNotifications;
+      if (capNotifPlugin && typeof capNotifPlugin.addListener === 'function') {
         capNotifListener = capNotifPlugin.addListener('localNotificationActionPerformed', () => {
           handleNotificationTap();
         });
-      } catch {}
-    }
+        if (capNotifListener && typeof capNotifListener.catch === 'function') {
+          capNotifListener.catch(() => {});
+        }
+      }
+    } catch {}
 
     const pendingGoogleToken = sessionStorage.getItem('pending_google_token');
     if (pendingGoogleToken) {
@@ -506,15 +512,15 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleAppResume);
       window.removeEventListener('focus', handleAppResume);
       window.removeEventListener('pageshow', handleAppResume);
-      if (capAppListener && typeof capAppListener.remove === 'function') {
-        try {
-          capAppListener.remove();
-        } catch {}
+      if (capAppListener) {
+        Promise.resolve(capAppListener)
+          .then((handle: any) => handle?.remove?.())
+          .catch(() => {});
       }
-      if (capNotifListener && typeof capNotifListener.remove === 'function') {
-        try {
-          capNotifListener.remove();
-        } catch {}
+      if (capNotifListener) {
+        Promise.resolve(capNotifListener)
+          .then((handle: any) => handle?.remove?.())
+          .catch(() => {});
       }
     };
   }, [applyAuthoritativeMiningStatus, computeRemainingFromStatus, syncServerData]);
