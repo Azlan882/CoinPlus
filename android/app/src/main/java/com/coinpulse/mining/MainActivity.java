@@ -58,6 +58,66 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onRequestPermissionsResult(
+        int requestCode,
+        String[] permissions,
+        int[] grantResults
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_CODE_POST_NOTIFICATIONS) {
+            boolean granted =
+                grantResults != null &&
+                grantResults.length > 0 &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            android.util.Log.i(
+                MiningNotificationReceiver.TAG,
+                "onRequestPermissionsResult POST_NOTIFICATIONS granted=" + granted
+            );
+            if (granted) {
+                MiningNotificationReceiver.ensureNotificationChannel(this);
+                try {
+                    SharedPreferences prefs = getAuthPrefs();
+                    String cycleKey = prefs.getString(
+                        MiningNotificationReceiver.KEY_SCHEDULED_CYCLE_KEY,
+                        ""
+                    );
+                    long triggerAt = prefs.getLong(
+                        MiningNotificationReceiver.KEY_SCHEDULED_TRIGGER_AT,
+                        0L
+                    );
+                    int notifId = prefs.getInt(
+                        MiningNotificationReceiver.KEY_SCHEDULED_NOTIF_ID,
+                        100101
+                    );
+                    String title = prefs.getString(
+                        MiningNotificationReceiver.KEY_SCHEDULED_TITLE,
+                        MiningNotificationReceiver.DEFAULT_TITLE
+                    );
+                    String body = prefs.getString(
+                        MiningNotificationReceiver.KEY_SCHEDULED_BODY,
+                        MiningNotificationReceiver.DEFAULT_BODY
+                    );
+                    if (
+                        cycleKey != null &&
+                        !cycleKey.isEmpty() &&
+                        triggerAt > System.currentTimeMillis()
+                    ) {
+                        MiningNotificationReceiver.scheduleAlarm(
+                            this,
+                            cycleKey,
+                            triggerAt,
+                            notifId,
+                            title,
+                            body
+                        );
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    @Override
     public void onPause() {
         super.onPause();
         try {
@@ -324,6 +384,22 @@ public class MainActivity extends BridgeActivity {
             try {
                 MiningNotificationReceiver.cancelScheduledAlarm(MainActivity.this);
             } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public boolean completeMiningCycleNotification(
+            final String cycleKey,
+            final long cycleEndMs
+        ) {
+            try {
+                return MiningNotificationReceiver.completeAndDeliverIfPending(
+                    MainActivity.this,
+                    cycleKey,
+                    cycleEndMs
+                );
+            } catch (Exception e) {
+                return false;
             }
         }
 

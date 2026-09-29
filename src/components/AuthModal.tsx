@@ -25,6 +25,7 @@ declare global {
         body: string
       ) => boolean;
       cancelMiningCycleNotification?: () => void;
+      completeMiningCycleNotification?: (cycleKey: string, cycleEndMs: number) => boolean;
       getScheduledMiningCycleNotification?: () => string;
       consumeNotificationTap?: () => string;
     };

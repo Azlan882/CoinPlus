@@ -30,13 +30,26 @@
       "bonusMiningRate": 0,
       "totalMiningRate": 0.12,
       "createdAt": "2026-09-25T12:00:00.000Z",
-      "lastLoginAt": "2026-09-28T16:48:19.630Z",
-      "lastActiveAt": "2026-09-28T17:49:13.936Z",
+      "lastLoginAt": "2026-09-29T04:04:22.779Z",
+      "lastActiveAt": "2026-09-29T04:04:38.459Z",
       "googleId": "110989942788351733924",
       "picture": "https://lh3.googleusercontent.com/a/ACg8ocKnyOmDX0w7jl6tkBSfkRAZWVRgJrUvuNLwqLyyBbTHdjf0Jw=s96-c"
     }
   },
   "miningSessions": [
+    {
+      "id": "ses_1790654678460_14_16c08b",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "sessionNumber": 14,
+      "cycleStartTime": 1790654678460,
+      "cycleEndTime": 1790658278460,
+      "minedAmount": 0.12,
+      "miningRateAtSession": 0.12,
+      "ipAddress": "127.0.0.1",
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 5 Build/UP1A.231105.001.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/153.0.8010.39 Mobile Safari/537.36",
+      "status": "completed",
+      "createdAt": "2026-09-29T04:04:38.461Z"
+    },
     {
       "id": "ses_1790617753937_13_16c08b",
       "userId": "usr_g_b7d1e0d22f16c08b",
@@ -219,10 +232,10 @@
     "usr_g_b7d1e0d22f16c08b": {
       "userId": "usr_g_b7d1e0d22f16c08b",
       "isMiningActive": true,
-      "currentCycleStartTime": 1790617753937,
-      "lastMinedAt": 1790617753937,
-      "nextMiningAvailableAt": 1790621353937,
-      "totalCyclesCompleted": 13
+      "currentCycleStartTime": 1790654678460,
+      "lastMinedAt": 1790654678460,
+      "nextMiningAvailableAt": 1790658278460,
+      "totalCyclesCompleted": 14
     }
   },
   "balances": {
@@ -236,16 +249,27 @@
     },
     "usr_g_b7d1e0d22f16c08b": {
       "userId": "usr_g_b7d1e0d22f16c08b",
-      "totalBalance": 1.56,
-      "totalMined": 1.56,
+      "totalBalance": 1.68,
+      "totalMined": 1.68,
       "totalReferralBonus": 0,
-      "lastCalculatedAt": "2026-09-28T17:49:13.937Z",
-      "integrityChecksum": "476b0f367d3e68622c29d8536fc1fdb63a9567362aaffc22a2edd8ad6c3c396b"
+      "lastCalculatedAt": "2026-09-29T04:04:38.460Z",
+      "integrityChecksum": "7253990d66d14940e1deed0c91532d6492155e5629a7c31fb0571509fe354190"
     }
   },
   "referrals": [],
   "rateHistory": [],
   "transactions": [
+    {
+      "id": "tx_1790654678460_c22502e2",
+      "userId": "usr_g_b7d1e0d22f16c08b",
+      "type": "mining_reward",
+      "amount": 0.12,
+      "balanceBefore": 1.56,
+      "balanceAfter": 1.68,
+      "referenceId": "ses_1790654678460_14_16c08b",
+      "description": "Hourly mining cycle #14 completed (+0.12 CP)",
+      "timestamp": "2026-09-29T04:04:38.460Z"
+    },
     {
       "id": "tx_1790617753937_a56b580b",
       "userId": "usr_g_b7d1e0d22f16c08b",

@@ -1,7 +1,7 @@
 import { MiningStatusResponse } from '../types.ts';
 
-export const MINING_NOTIFICATION_CHANNEL_ID = 'mining';
-export const MINING_NOTIFICATION_CHANNEL_NAME = 'Mining';
+export const MINING_NOTIFICATION_CHANNEL_ID = 'mining_cycle_complete';
+export const MINING_NOTIFICATION_CHANNEL_NAME = 'Mining Cycle Alerts';
 export const MINING_NOTIFICATION_TITLE = 'Mining cycle completed \uD83C\uDF89';
 export const MINING_NOTIFICATION_BODY =
   'Your mining cycle is complete. Tap to start your next cycle.';
@@ -13,13 +13,13 @@ const DELIVERED_CYCLE_STORAGE_KEY = 'coinpulse_delivered_cycle_notif_v1';
 interface ScheduledCycleRecord {
   cycleKey: string;
   notificationId: number;
+  cycleStartMs: number | null;
   triggerAtEpochMs: number;
   scheduledAtMs: number;
 }
 
 let inMemoryScheduledCycleKey: string | null = null;
 let inMemoryScheduledTriggerMs = 0;
-let webFallbackTimeoutId: number | null = null;
 
 function getLocalNotificationsPlugin(): any | null {
   if (typeof window === 'undefined') return null;
@@ -31,13 +31,16 @@ function getNativeBridge(): NonNullable<Window['CoinPulseNative']> | null {
   return window.CoinPulseNative ?? null;
 }
 
+/**
+ * Deterministic key derived from the authoritative server cycle timestamp.
+ * Independent of whether user profile loaded before or after /api/mining/status.
+ */
 export function buildCycleNotificationKey(
   nextMiningAvailableAt: number,
-  userId?: string | null
+  _userId?: string | null
 ): string {
   const normalizedEpochSec = Math.floor(Math.max(0, nextMiningAvailableAt) / 1000);
-  const safeUser = (userId || 'miner').trim() || 'miner';
-  return `cycle_${safeUser}_${normalizedEpochSec}`;
+  return `cycle_${normalizedEpochSec}`;
 }
 
 export function deriveCycleNotificationId(nextMiningAvailableAt: number): number {
@@ -51,7 +54,11 @@ function getStoredScheduledRecord(): ScheduledCycleRecord | null {
     const raw = localStorage.getItem(SCHEDULED_CYCLE_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.cycleKey === 'string' && typeof parsed.triggerAtEpochMs === 'number') {
+    if (
+      parsed &&
+      typeof parsed.cycleKey === 'string' &&
+      typeof parsed.triggerAtEpochMs === 'number'
+    ) {
       return parsed as ScheduledCycleRecord;
     }
   } catch {}
@@ -85,8 +92,21 @@ export function markCycleNotificationDelivered(cycleKey: string): void {
   } catch {}
 }
 
+function getCurrentPermissionStatusSummary(): string {
+  try {
+    const nativeBridge = getNativeBridge();
+    if (nativeBridge?.getNotificationPermissionStatus) {
+      return nativeBridge.getNotificationPermissionStatus();
+    }
+    if (typeof Notification !== 'undefined') {
+      return Notification.permission;
+    }
+  } catch {}
+  return 'unknown';
+}
+
 /**
- * Ensures the Android "Mining" notification channel exists.
+ * Ensures the Android "Mining Cycle Alerts" notification channel exists with high importance.
  */
 export async function ensureMiningNotificationChannel(): Promise<void> {
   try {
@@ -96,12 +116,14 @@ export async function ensureMiningNotificationChannel(): Promise<void> {
         id: MINING_NOTIFICATION_CHANNEL_ID,
         name: MINING_NOTIFICATION_CHANNEL_NAME,
         description: 'Notifications when your CoinPulse mining cycle completes',
-        importance: 3, // IMPORTANCE_DEFAULT
-        visibility: 1,
+        importance: 4, // IMPORTANCE_HIGH
+        visibility: 1, // VISIBILITY_PUBLIC
         vibration: true,
       });
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[CoinPulse Notifications] Channel creation warning:', err);
+  }
 }
 
 /**
@@ -126,6 +148,7 @@ export async function requestNotificationPermissionAfterSignIn(
     const nativeBridge = getNativeBridge();
     if (nativeBridge?.getNotificationPermissionStatus) {
       const currentStatus = nativeBridge.getNotificationPermissionStatus();
+      console.info('[CoinPulse Notifications] Current permission status:', currentStatus);
       if (currentStatus === 'granted') {
         return 'granted';
       }
@@ -147,6 +170,7 @@ export async function requestNotificationPermissionAfterSignIn(
         localStorage.setItem(NOTIF_PROMPTED_STORAGE_KEY, '1');
       } catch {}
       const result = nativeBridge.requestNotificationPermissionOnce();
+      console.info('[CoinPulse Notifications] Native permission request result:', result);
       if (result === 'granted' || result === 'requested' || result === 'denied') {
         return result;
       }
@@ -157,6 +181,7 @@ export async function requestNotificationPermissionAfterSignIn(
     if (plugin) {
       if (typeof plugin.checkPermissions === 'function') {
         const checkRes = await plugin.checkPermissions();
+        console.info('[CoinPulse Notifications] Capacitor checkPermissions:', checkRes?.display);
         if (checkRes?.display === 'granted') {
           return 'granted';
         }
@@ -173,6 +198,7 @@ export async function requestNotificationPermissionAfterSignIn(
           localStorage.setItem(NOTIF_PROMPTED_STORAGE_KEY, '1');
         } catch {}
         const reqRes = await plugin.requestPermissions();
+        console.info('[CoinPulse Notifications] Capacitor requestPermissions:', reqRes?.display);
         return reqRes?.display === 'granted' ? 'granted' : 'denied';
       }
     }
@@ -195,24 +221,19 @@ export async function requestNotificationPermissionAfterSignIn(
       return webPerm === 'granted' ? 'granted' : 'denied';
     }
   } catch (err) {
-    console.warn('[CoinPulse Notifications] Permission request skipped:', err);
+    console.warn('[CoinPulse Notifications] Permission request error:', err);
   }
 
   return 'denied';
 }
 
 /**
- * Cancels any pending scheduled mining cycle notification across native Android AlarmManager,
- * Capacitor LocalNotifications, and web fallback timers.
+ * Cancels any pending scheduled mining cycle notification across native Android AlarmManager
+ * and Capacitor LocalNotifications.
  */
 export async function cancelScheduledMiningNotification(): Promise<void> {
   inMemoryScheduledCycleKey = null;
   inMemoryScheduledTriggerMs = 0;
-
-  if (webFallbackTimeoutId !== null && typeof window !== 'undefined') {
-    window.clearTimeout(webFallbackTimeoutId);
-    webFallbackTimeoutId = null;
-  }
 
   const stored = getStoredScheduledRecord();
   setStoredScheduledRecord(null);
@@ -222,7 +243,9 @@ export async function cancelScheduledMiningNotification(): Promise<void> {
     if (nativeBridge?.cancelMiningCycleNotification) {
       nativeBridge.cancelMiningCycleNotification();
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[CoinPulse Notifications] Native cancel error:', err);
+  }
 
   try {
     const plugin = getLocalNotificationsPlugin();
@@ -231,7 +254,9 @@ export async function cancelScheduledMiningNotification(): Promise<void> {
         notifications: [{ id: stored?.notificationId || 100101 }],
       });
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[CoinPulse Notifications] Capacitor cancel error:', err);
+  }
 }
 
 /**
@@ -239,7 +264,7 @@ export async function cancelScheduledMiningNotification(): Promise<void> {
  *
  * - Uses the server's authoritative `nextMiningAvailableAt` timestamp.
  * - Prevents duplicate notifications for the same cycle using a deterministic `cycleKey` and `notificationId`.
- * - Cancels any pending notification if the cycle has already completed or is inactive.
+ * - Delivers once if a tracked cycle just completed before the OS broadcast ran, then cancels any pending alarm.
  */
 export async function syncMiningCycleNotification(
   status: MiningStatusResponse | null,
@@ -250,6 +275,7 @@ export async function syncMiningCycleNotification(
   }
 
   const authoritativeEndMs = status.nextMiningAvailableAt ?? 0;
+  const cycleStartMs = status.currentCycleStartTime ?? status.lastMinedAt ?? null;
   const serverNowMs =
     typeof status.serverTime === 'number' && status.serverTime > 0
       ? status.serverTime
@@ -261,9 +287,17 @@ export async function syncMiningCycleNotification(
     authoritativeEndMs > serverNowMs;
 
   if (!isCycleActive) {
-    // Cycle is complete ('available' or 'ready') -> mark current cycle key as handled and clear pending alarms
+    // Cycle is complete ('available' or 'ready')
     if (authoritativeEndMs > 0) {
       const completedKey = buildCycleNotificationKey(authoritativeEndMs, userId);
+      try {
+        const nativeBridge = getNativeBridge();
+        if (nativeBridge?.completeMiningCycleNotification) {
+          nativeBridge.completeMiningCycleNotification(completedKey, authoritativeEndMs);
+        }
+      } catch (err) {
+        console.warn('[CoinPulse Notifications] Complete cycle check error:', err);
+      }
       markCycleNotificationDelivered(completedKey);
     }
     await cancelScheduledMiningNotification();
@@ -272,13 +306,14 @@ export async function syncMiningCycleNotification(
 
   const cycleKey = buildCycleNotificationKey(authoritativeEndMs, userId);
   const notificationId = deriveCycleNotificationId(authoritativeEndMs);
+  const scheduledTriggerAtMs = authoritativeEndMs;
 
   // 1. Check if this cycle's notification was already delivered
   if (getLastDeliveredCycleKey() === cycleKey) {
     return;
   }
 
-  // 2. Check native Android SharedPreferences to see if this exact cycle is already scheduled
+  // 2. Check native Android SharedPreferences to see if this exact cycle is already scheduled or delivered
   const nativeBridge = getNativeBridge();
   if (nativeBridge?.getScheduledMiningCycleNotification) {
     try {
@@ -291,14 +326,15 @@ export async function syncMiningCycleNotification(
         }
         if (
           parsedNative?.cycleKey === cycleKey &&
-          Math.abs((parsedNative?.triggerAtMs ?? 0) - authoritativeEndMs) < 2000
+          Math.abs((parsedNative?.triggerAtMs ?? 0) - scheduledTriggerAtMs) < 3000
         ) {
           inMemoryScheduledCycleKey = cycleKey;
-          inMemoryScheduledTriggerMs = authoritativeEndMs;
+          inMemoryScheduledTriggerMs = scheduledTriggerAtMs;
           setStoredScheduledRecord({
             cycleKey,
             notificationId,
-            triggerAtEpochMs: authoritativeEndMs,
+            cycleStartMs,
+            triggerAtEpochMs: scheduledTriggerAtMs,
             scheduledAtMs: Date.now(),
           });
           return;
@@ -307,41 +343,51 @@ export async function syncMiningCycleNotification(
     } catch {}
   }
 
-  // 3. Check in-memory and localStorage state to avoid redundant re-scheduling
+  // 3. Check in-memory and localStorage state to avoid redundant re-scheduling on React re-renders
   const existingStored = getStoredScheduledRecord();
   if (
     inMemoryScheduledCycleKey === cycleKey &&
-    Math.abs(inMemoryScheduledTriggerMs - authoritativeEndMs) < 2000
+    Math.abs(inMemoryScheduledTriggerMs - scheduledTriggerAtMs) < 3000
   ) {
     return;
   }
   if (
     existingStored &&
     existingStored.cycleKey === cycleKey &&
-    Math.abs(existingStored.triggerAtEpochMs - authoritativeEndMs) < 2000 &&
+    Math.abs(existingStored.triggerAtEpochMs - scheduledTriggerAtMs) < 3000 &&
     !nativeBridge?.scheduleMiningCycleNotification
   ) {
     inMemoryScheduledCycleKey = cycleKey;
-    inMemoryScheduledTriggerMs = authoritativeEndMs;
+    inMemoryScheduledTriggerMs = scheduledTriggerAtMs;
     return;
   }
 
+  // Reserve in-memory slot before async channel creation to prevent concurrent duplicate calls
+  inMemoryScheduledCycleKey = cycleKey;
+  inMemoryScheduledTriggerMs = scheduledTriggerAtMs;
+
+  const permStatus = getCurrentPermissionStatusSummary();
   await ensureMiningNotificationChannel();
 
-  // 4. Schedule via Native Android AlarmManager bridge (guarantees delivery when app is minimized, locked, or killed)
+  // 4. Schedule via Native Android AlarmManager bridge (guarantees delivery when app is minimized, locked, or closed)
   let scheduledNatively = false;
+  let schedulingError: string | null = null;
+
   if (nativeBridge?.scheduleMiningCycleNotification) {
     try {
       scheduledNatively = Boolean(
         nativeBridge.scheduleMiningCycleNotification(
           cycleKey,
-          authoritativeEndMs,
+          scheduledTriggerAtMs,
           notificationId,
           MINING_NOTIFICATION_TITLE,
           MINING_NOTIFICATION_BODY
         )
       );
-    } catch {}
+    } catch (err: any) {
+      schedulingError = err?.message || String(err);
+      console.error('[CoinPulse Notifications] Native scheduleAlarm error:', err);
+    }
   }
 
   // 5. Fallback to Capacitor LocalNotifications plugin if CoinPulseNative.scheduleMiningCycleNotification wasn't used
@@ -357,8 +403,8 @@ export async function syncMiningCycleNotification(
               body: MINING_NOTIFICATION_BODY,
               channelId: MINING_NOTIFICATION_CHANNEL_ID,
               schedule: {
-                at: new Date(authoritativeEndMs),
-                atEpochMs: authoritativeEndMs,
+                at: new Date(scheduledTriggerAtMs),
+                atEpochMs: scheduledTriggerAtMs,
                 allowWhileIdle: true,
               },
               extra: {
@@ -370,16 +416,29 @@ export async function syncMiningCycleNotification(
           ],
         });
         scheduledNatively = true;
-      } catch {}
+      } catch (err: any) {
+        schedulingError = err?.message || String(err);
+        console.error('[CoinPulse Notifications] Capacitor LocalNotifications.schedule error:', err);
+      }
     }
   }
 
-  inMemoryScheduledCycleKey = cycleKey;
-  inMemoryScheduledTriggerMs = authoritativeEndMs;
+  console.info('[CoinPulse Notifications] Cycle notification scheduling summary:', {
+    permissionStatus: permStatus,
+    cycleStartTimestamp: cycleStartMs,
+    cycleCompletionTimestamp: authoritativeEndMs,
+    scheduledNotificationTime: scheduledTriggerAtMs,
+    notificationId,
+    cycleKey,
+    schedulingSucceeded: scheduledNatively,
+    schedulingError,
+  });
+
   setStoredScheduledRecord({
     cycleKey,
     notificationId,
-    triggerAtEpochMs: authoritativeEndMs,
+    cycleStartMs,
+    triggerAtEpochMs: scheduledTriggerAtMs,
     scheduledAtMs: Date.now(),
   });
 }

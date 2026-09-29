@@ -2,6 +2,7 @@ package com.coinpulse.mining;
 
 import android.Manifest;
 import android.app.AlarmManager;
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -10,17 +11,24 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.Build;
+import android.os.PowerManager;
+import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 
 public class MiningNotificationReceiver extends BroadcastReceiver {
 
+    public static final String TAG = "CoinPulseNotif";
+
     public static final String ACTION_MINING_CYCLE_COMPLETED =
         "com.coinpulse.mining.ACTION_MINING_CYCLE_COMPLETED";
-    public static final String CHANNEL_ID = "mining";
-    public static final String CHANNEL_NAME = "Mining";
+    public static final String CHANNEL_ID = "mining_cycle_complete";
+    public static final String LEGACY_CHANNEL_ID = "mining";
+    public static final String CHANNEL_NAME = "Mining Cycle Alerts";
     public static final String CHANNEL_DESCRIPTION =
         "Notifications when your CoinPulse mining cycle completes";
 
@@ -42,62 +50,136 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
             return;
         }
 
-        final String action = intent.getAction();
-        if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
-            rescheduleAfterBoot(context);
-            return;
+        PowerManager.WakeLock wakeLock = null;
+        try {
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "com.coinpulse.mining:MiningNotifWakeLock"
+                );
+                wakeLock.acquire(10_000L);
+            }
+        } catch (Exception ignored) {
         }
 
-        if (!ACTION_MINING_CYCLE_COMPLETED.equals(action)) {
-            return;
-        }
+        try {
+            final String action = intent.getAction();
+            Log.i(TAG, "onReceive action=" + action);
 
-        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        String scheduledCycleKey = prefs.getString(KEY_SCHEDULED_CYCLE_KEY, "");
-        long scheduledTriggerAt = prefs.getLong(KEY_SCHEDULED_TRIGGER_AT, 0L);
-        String lastDeliveredCycleKey = prefs.getString(KEY_LAST_DELIVERED_CYCLE_KEY, "");
+            if (
+                Intent.ACTION_BOOT_COMPLETED.equals(action) ||
+                Intent.ACTION_MY_PACKAGE_REPLACED.equals(action) ||
+                "android.intent.action.QUICKBOOT_POWERON".equals(action) ||
+                "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED".equals(action)
+            ) {
+                rescheduleAfterBoot(context);
+                return;
+            }
 
-        String intentCycleKey = intent.getStringExtra("cycle_key");
-        if (intentCycleKey == null || intentCycleKey.isEmpty()) {
-            intentCycleKey = scheduledCycleKey;
-        }
+            if (!ACTION_MINING_CYCLE_COMPLETED.equals(action)) {
+                return;
+            }
 
-        // Prevent duplicate delivery for the same cycle
-        if (intentCycleKey != null && !intentCycleKey.isEmpty() && intentCycleKey.equals(lastDeliveredCycleKey)) {
-            clearScheduledState(prefs);
-            return;
-        }
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String scheduledCycleKey = prefs.getString(KEY_SCHEDULED_CYCLE_KEY, "");
+            long scheduledTriggerAt = prefs.getLong(KEY_SCHEDULED_TRIGGER_AT, 0L);
+            String lastDeliveredCycleKey = prefs.getString(KEY_LAST_DELIVERED_CYCLE_KEY, "");
 
-        // If the scheduled cycle was cancelled or replaced by a different cycle, ignore stale alarm
-        if (scheduledCycleKey == null || scheduledCycleKey.isEmpty()) {
-            return;
-        }
-        if (intentCycleKey != null && !intentCycleKey.isEmpty() && !intentCycleKey.equals(scheduledCycleKey)) {
-            return;
-        }
+            String intentCycleKey = intent.getStringExtra("cycle_key");
+            long intentTriggerAt = intent.getLongExtra("trigger_at_ms", 0L);
 
-        int notificationId = intent.getIntExtra(
-            "notification_id",
-            prefs.getInt(KEY_SCHEDULED_NOTIF_ID, 100101)
-        );
-        String title = intent.getStringExtra("title");
-        if (title == null || title.trim().isEmpty()) {
-            title = prefs.getString(KEY_SCHEDULED_TITLE, DEFAULT_TITLE);
-        }
-        String body = intent.getStringExtra("body");
-        if (body == null || body.trim().isEmpty()) {
-            body = prefs.getString(KEY_SCHEDULED_BODY, DEFAULT_BODY);
-        }
+            String effectiveCycleKey = (intentCycleKey != null && !intentCycleKey.isEmpty())
+                ? intentCycleKey
+                : scheduledCycleKey;
+            long effectiveTriggerAt = intentTriggerAt > 0L ? intentTriggerAt : scheduledTriggerAt;
 
-        // Mark cycle notification as delivered and clear pending alarm state before displaying
-        prefs.edit()
-            .putString(KEY_LAST_DELIVERED_CYCLE_KEY, scheduledCycleKey)
-            .remove(KEY_SCHEDULED_CYCLE_KEY)
-            .remove(KEY_SCHEDULED_TRIGGER_AT)
-            .remove(KEY_SCHEDULED_NOTIF_ID)
-            .apply();
+            Log.i(
+                TAG,
+                "Alarm fired: intentCycleKey=" + intentCycleKey +
+                " scheduledCycleKey=" + scheduledCycleKey +
+                " lastDeliveredCycleKey=" + lastDeliveredCycleKey +
+                " effectiveTriggerAt=" + effectiveTriggerAt
+            );
 
-        showCycleCompletedNotification(context, notificationId, scheduledCycleKey, scheduledTriggerAt, title, body);
+            // 1. Prevent duplicate delivery for the exact same cycle
+            if (
+                effectiveCycleKey != null &&
+                !effectiveCycleKey.isEmpty() &&
+                effectiveCycleKey.equals(lastDeliveredCycleKey)
+            ) {
+                Log.i(TAG, "Skipping duplicate notification for already-delivered cycleKey=" + effectiveCycleKey);
+                clearScheduledState(prefs);
+                return;
+            }
+
+            // 2. If a newer cycle was explicitly scheduled over an older cycle, ignore the stale intent
+            if (
+                scheduledCycleKey != null &&
+                !scheduledCycleKey.isEmpty() &&
+                intentCycleKey != null &&
+                !intentCycleKey.isEmpty() &&
+                !intentCycleKey.equals(scheduledCycleKey)
+            ) {
+                Log.i(
+                    TAG,
+                    "Ignoring stale alarm for intentCycleKey=" + intentCycleKey +
+                    " (current scheduledCycleKey=" + scheduledCycleKey + ")"
+                );
+                return;
+            }
+
+            int notificationId = intent.getIntExtra(
+                "notification_id",
+                prefs.getInt(KEY_SCHEDULED_NOTIF_ID, 100101)
+            );
+            String title = intent.getStringExtra("title");
+            if (title == null || title.trim().isEmpty()) {
+                title = prefs.getString(KEY_SCHEDULED_TITLE, DEFAULT_TITLE);
+            }
+            String body = intent.getStringExtra("body");
+            if (body == null || body.trim().isEmpty()) {
+                body = prefs.getString(KEY_SCHEDULED_BODY, DEFAULT_BODY);
+            }
+
+            String deliveredKeyToRecord = (effectiveCycleKey != null && !effectiveCycleKey.isEmpty())
+                ? effectiveCycleKey
+                : ("cycle_" + notificationId);
+
+            synchronized (MiningNotificationReceiver.class) {
+                String latestDelivered = prefs.getString(KEY_LAST_DELIVERED_CYCLE_KEY, "");
+                if (deliveredKeyToRecord.equals(latestDelivered)) {
+                    Log.i(TAG, "Skipping duplicate notification inside lock for cycleKey=" + deliveredKeyToRecord);
+                    clearScheduledState(prefs);
+                    return;
+                }
+                // Mark cycle notification as delivered and clear pending alarm state synchronously
+                prefs.edit()
+                    .putString(KEY_LAST_DELIVERED_CYCLE_KEY, deliveredKeyToRecord)
+                    .remove(KEY_SCHEDULED_CYCLE_KEY)
+                    .remove(KEY_SCHEDULED_TRIGGER_AT)
+                    .remove(KEY_SCHEDULED_NOTIF_ID)
+                    .commit();
+            }
+
+            showCycleCompletedNotification(
+                context,
+                notificationId,
+                deliveredKeyToRecord,
+                effectiveTriggerAt,
+                title,
+                body
+            );
+        } finally {
+            if (wakeLock != null) {
+                try {
+                    if (wakeLock.isHeld()) {
+                        wakeLock.release();
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 
     public static void ensureNotificationChannel(Context context) {
@@ -110,15 +192,30 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
             if (manager == null) {
                 return;
             }
-            NotificationChannel channel = new NotificationChannel(
+
+            NotificationChannel primaryChannel = new NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             );
-            channel.setDescription(CHANNEL_DESCRIPTION);
-            channel.enableVibration(true);
-            manager.createNotificationChannel(channel);
-        } catch (Exception ignored) {
+            primaryChannel.setDescription(CHANNEL_DESCRIPTION);
+            primaryChannel.enableVibration(true);
+            primaryChannel.enableLights(true);
+            primaryChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            manager.createNotificationChannel(primaryChannel);
+
+            NotificationChannel legacyChannel = new NotificationChannel(
+                LEGACY_CHANNEL_ID,
+                "Mining",
+                NotificationManager.IMPORTANCE_HIGH
+            );
+            legacyChannel.setDescription(CHANNEL_DESCRIPTION);
+            legacyChannel.enableVibration(true);
+            legacyChannel.enableLights(true);
+            legacyChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            manager.createNotificationChannel(legacyChannel);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create notification channel", e);
         }
     }
 
@@ -134,11 +231,17 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
                         Manifest.permission.POST_NOTIFICATIONS
                     ) != PackageManager.PERMISSION_GRANTED
                 ) {
+                    Log.w(TAG, "POST_NOTIFICATIONS permission not granted");
                     return false;
                 }
             }
-            return NotificationManagerCompat.from(context).areNotificationsEnabled();
+            boolean enabled = NotificationManagerCompat.from(context).areNotificationsEnabled();
+            if (!enabled) {
+                Log.w(TAG, "Notifications are disabled in system NotificationManagerCompat");
+            }
+            return enabled;
         } catch (Exception e) {
+            Log.e(TAG, "Error checking notification permission", e);
             return false;
         }
     }
@@ -151,22 +254,21 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
         String title,
         String body
     ) {
-        if (!hasNotificationPermission(context)) {
+        boolean permitted = hasNotificationPermission(context);
+        Log.i(
+            TAG,
+            "showCycleCompletedNotification: id=" + notificationId +
+            " cycleKey=" + cycleKey +
+            " cycleEndMs=" + cycleEndMs +
+            " permitted=" + permitted
+        );
+        if (!permitted) {
             return;
         }
         try {
             ensureNotificationChannel(context);
 
-            Intent tapIntent = new Intent(context, MainActivity.class);
-            tapIntent.setFlags(
-                Intent.FLAG_ACTIVITY_SINGLE_TOP |
-                Intent.FLAG_ACTIVITY_CLEAR_TOP |
-                Intent.FLAG_ACTIVITY_NEW_TASK
-            );
-            tapIntent.putExtra("from_mining_notification", true);
-            tapIntent.putExtra("notification_action", "open_mining_dashboard");
-            tapIntent.putExtra("cycle_key", cycleKey != null ? cycleKey : "");
-            tapIntent.putExtra("cycle_end_ms", cycleEndMs);
+            Intent tapIntent = buildTapActivityIntent(context, cycleKey, cycleEndMs);
 
             int pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -175,35 +277,69 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
 
             PendingIntent contentIntent = PendingIntent.getActivity(
                 context,
-                notificationId,
+                notificationId > 0 ? notificationId : 100101,
                 tapIntent,
                 pendingFlags
             );
 
-            int smallIcon = context.getApplicationInfo().icon;
+            int smallIcon = R.drawable.ic_stat_coinpulse;
             if (smallIcon == 0) {
                 smallIcon = android.R.drawable.ic_dialog_info;
             }
 
+            String finalTitle = (title != null && !title.isEmpty()) ? title : DEFAULT_TITLE;
+            String finalBody = (body != null && !body.isEmpty()) ? body : DEFAULT_BODY;
+
             NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(smallIcon)
-                .setContentTitle(title != null && !title.isEmpty() ? title : DEFAULT_TITLE)
-                .setContentText(body != null && !body.isEmpty() ? body : DEFAULT_BODY)
-                .setStyle(
-                    new NotificationCompat.BigTextStyle().bigText(
-                        body != null && !body.isEmpty() ? body : DEFAULT_BODY
-                    )
-                )
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setContentTitle(finalTitle)
+                .setContentText(finalBody)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(finalBody))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setWhen(System.currentTimeMillis())
+                .setShowWhen(true)
                 .setAutoCancel(true)
                 .setContentIntent(contentIntent);
 
-            NotificationManagerCompat.from(context).notify(notificationId, builder.build());
-        } catch (SecurityException | IllegalArgumentException ignored) {
-        } catch (Exception ignored) {
+            try {
+                Bitmap largeIcon = BitmapFactory.decodeResource(
+                    context.getResources(),
+                    R.mipmap.ic_launcher
+                );
+                if (largeIcon != null) {
+                    builder.setLargeIcon(largeIcon);
+                }
+            } catch (Exception ignored) {
+            }
+
+            NotificationManagerCompat.from(context).notify(
+                notificationId > 0 ? notificationId : 100101,
+                builder.build()
+            );
+            Log.i(TAG, "Successfully posted notification id=" + notificationId + " for cycleKey=" + cycleKey);
+        } catch (SecurityException | IllegalArgumentException se) {
+            Log.e(TAG, "Security/Argument exception posting notification", se);
+        } catch (Exception e) {
+            Log.e(TAG, "Unexpected exception posting notification", e);
         }
+    }
+
+    private static Intent buildTapActivityIntent(Context context, String cycleKey, long cycleEndMs) {
+        Intent tapIntent = new Intent(context, MainActivity.class);
+        tapIntent.setPackage(context.getPackageName());
+        tapIntent.setFlags(
+            Intent.FLAG_ACTIVITY_SINGLE_TOP |
+            Intent.FLAG_ACTIVITY_CLEAR_TOP |
+            Intent.FLAG_ACTIVITY_NEW_TASK
+        );
+        tapIntent.putExtra("from_mining_notification", true);
+        tapIntent.putExtra("notification_action", "open_mining_dashboard");
+        tapIntent.putExtra("cycle_key", cycleKey != null ? cycleKey : "");
+        tapIntent.putExtra("cycle_end_ms", cycleEndMs);
+        return tapIntent;
     }
 
     public static boolean scheduleAlarm(
@@ -215,6 +351,11 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
         String body
     ) {
         if (context == null || cycleKey == null || cycleKey.trim().isEmpty() || triggerAtEpochMs <= 0) {
+            Log.w(
+                TAG,
+                "scheduleAlarm rejected invalid args: cycleKey=" + cycleKey +
+                " triggerAtEpochMs=" + triggerAtEpochMs
+            );
             return false;
         }
 
@@ -224,97 +365,142 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
 
             String lastDelivered = prefs.getString(KEY_LAST_DELIVERED_CYCLE_KEY, "");
             if (cycleKey.equals(lastDelivered)) {
+                Log.i(TAG, "scheduleAlarm skipped: cycleKey already delivered=" + cycleKey);
                 return false;
             }
 
+            int effectiveNotifId = notificationId > 0 ? notificationId : 100101;
             String existingKey = prefs.getString(KEY_SCHEDULED_CYCLE_KEY, "");
             long existingTriggerAt = prefs.getLong(KEY_SCHEDULED_TRIGGER_AT, 0L);
             int existingNotifId = prefs.getInt(KEY_SCHEDULED_NOTIF_ID, 0);
 
-            // If this exact cycle is already scheduled with the same timestamp, avoid duplicate scheduling
+            // If this exact cycle is already scheduled with essentially the same timestamp, avoid redundant work
             if (
                 cycleKey.equals(existingKey) &&
-                Math.abs(existingTriggerAt - triggerAtEpochMs) < 2000L &&
-                existingNotifId == notificationId
+                Math.abs(existingTriggerAt - triggerAtEpochMs) < 3000L &&
+                existingNotifId == effectiveNotifId
             ) {
+                Log.i(
+                    TAG,
+                    "scheduleAlarm already active for cycleKey=" + cycleKey +
+                    " triggerAt=" + existingTriggerAt +
+                    " id=" + effectiveNotifId
+                );
                 return true;
             }
 
-            // Cancel any previous cycle alarm before scheduling the new one
-            cancelAlarmInternal(context, existingNotifId > 0 ? existingNotifId : notificationId);
+            // If a DIFFERENT previous cycle alarm was scheduled, cancel the previous cycle's PendingIntent first
+            if (existingNotifId > 0 && !cycleKey.equals(existingKey)) {
+                cancelAlarmInternal(context, existingNotifId);
+            }
 
             String finalTitle = (title != null && !title.trim().isEmpty()) ? title.trim() : DEFAULT_TITLE;
             String finalBody = (body != null && !body.trim().isEmpty()) ? body.trim() : DEFAULT_BODY;
 
+            long nowMs = System.currentTimeMillis();
+            long safeTriggerMs = Math.max(nowMs + 500L, triggerAtEpochMs);
+
+            // Synchronously persist to SharedPreferences so force-closing the app immediately after mining never loses state
             prefs.edit()
                 .putString(KEY_SCHEDULED_CYCLE_KEY, cycleKey)
-                .putLong(KEY_SCHEDULED_TRIGGER_AT, triggerAtEpochMs)
-                .putInt(KEY_SCHEDULED_NOTIF_ID, notificationId)
+                .putLong(KEY_SCHEDULED_TRIGGER_AT, safeTriggerMs)
+                .putInt(KEY_SCHEDULED_NOTIF_ID, effectiveNotifId)
                 .putString(KEY_SCHEDULED_TITLE, finalTitle)
                 .putString(KEY_SCHEDULED_BODY, finalBody)
-                .apply();
+                .commit();
 
             AlarmManager alarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
             if (alarmManager == null) {
+                Log.e(TAG, "AlarmManager service is null");
                 return false;
             }
 
             PendingIntent alarmIntent = buildAlarmPendingIntent(
                 context,
-                notificationId,
+                effectiveNotifId,
                 cycleKey,
+                safeTriggerMs,
                 finalTitle,
                 finalBody,
                 false
             );
             if (alarmIntent == null) {
+                Log.e(TAG, "Failed to build alarm PendingIntent");
                 return false;
             }
 
-            long safeTriggerMs = Math.max(System.currentTimeMillis() + 500L, triggerAtEpochMs);
-
+            boolean canExact = true;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (alarmManager.canScheduleExactAlarms()) {
+                canExact = alarmManager.canScheduleExactAlarms();
+            }
+
+            String alarmMode = "unknown";
+            if (canExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                try {
+                    Intent showActivityIntent = buildTapActivityIntent(context, cycleKey, safeTriggerMs);
+                    int showFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        showFlags |= PendingIntent.FLAG_IMMUTABLE;
+                    }
+                    PendingIntent showPendingIntent = PendingIntent.getActivity(
+                        context,
+                        effectiveNotifId,
+                        showActivityIntent,
+                        showFlags
+                    );
+                    AlarmManager.AlarmClockInfo clockInfo = new AlarmManager.AlarmClockInfo(
+                        safeTriggerMs,
+                        showPendingIntent
+                    );
+                    alarmManager.setAlarmClock(clockInfo, alarmIntent);
+                    alarmMode = "setAlarmClock";
+                } catch (SecurityException se) {
+                    Log.w(TAG, "setAlarmClock SecurityException, falling back", se);
+                }
+            }
+
+            if ("unknown".equals(alarmMode)) {
+                if (canExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     try {
                         alarmManager.setExactAndAllowWhileIdle(
                             AlarmManager.RTC_WAKEUP,
                             safeTriggerMs,
                             alarmIntent
                         );
-                        return true;
-                    } catch (SecurityException ignored) {
+                        alarmMode = "setExactAndAllowWhileIdle";
+                    } catch (SecurityException se) {
+                        Log.w(TAG, "setExactAndAllowWhileIdle SecurityException, falling back", se);
                     }
                 }
+            }
+
+            if ("unknown".equals(alarmMode)) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         safeTriggerMs,
                         alarmIntent
                     );
+                    alarmMode = "setAndAllowWhileIdle";
                 } else {
-                    alarmManager.set(AlarmManager.RTC_WAKEUP, safeTriggerMs, alarmIntent);
+                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, safeTriggerMs, alarmIntent);
+                    alarmMode = "setExact";
                 }
-                return true;
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                try {
-                    alarmManager.setExactAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        safeTriggerMs,
-                        alarmIntent
-                    );
-                } catch (SecurityException se) {
-                    alarmManager.setAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        safeTriggerMs,
-                        alarmIntent
-                    );
-                }
-                return true;
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, safeTriggerMs, alarmIntent);
-                return true;
             }
+
+            Log.i(
+                TAG,
+                "Scheduled mining notification: cycleKey=" + cycleKey +
+                " id=" + effectiveNotifId +
+                " nowMs=" + nowMs +
+                " triggerAtMs=" + safeTriggerMs +
+                " inSec=" + ((safeTriggerMs - nowMs) / 1000L) +
+                " mode=" + alarmMode +
+                " permission=" + hasNotificationPermission(context)
+            );
+            return true;
         } catch (Exception e) {
+            Log.e(TAG, "Exception in scheduleAlarm", e);
             return false;
         }
     }
@@ -326,9 +512,81 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
         try {
             SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             int existingNotifId = prefs.getInt(KEY_SCHEDULED_NOTIF_ID, 100101);
+            String existingKey = prefs.getString(KEY_SCHEDULED_CYCLE_KEY, "");
+            Log.i(TAG, "cancelScheduledAlarm called: existingKey=" + existingKey + " id=" + existingNotifId);
             cancelAlarmInternal(context, existingNotifId);
+            if (existingNotifId != 100101) {
+                cancelAlarmInternal(context, 100101);
+            }
             clearScheduledState(prefs);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.e(TAG, "Exception in cancelScheduledAlarm", e);
+        }
+    }
+
+    public static boolean completeAndDeliverIfPending(
+        Context context,
+        String completedCycleKey,
+        long cycleEndMs
+    ) {
+        if (context == null) {
+            return false;
+        }
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String targetKey;
+            int notifId;
+            long triggerAt;
+            String title;
+            String body;
+            boolean shouldDeliver = false;
+
+            synchronized (MiningNotificationReceiver.class) {
+                String scheduledKey = prefs.getString(KEY_SCHEDULED_CYCLE_KEY, "");
+                String lastDelivered = prefs.getString(KEY_LAST_DELIVERED_CYCLE_KEY, "");
+                notifId = prefs.getInt(KEY_SCHEDULED_NOTIF_ID, 100101);
+                triggerAt = prefs.getLong(KEY_SCHEDULED_TRIGGER_AT, cycleEndMs);
+                title = prefs.getString(KEY_SCHEDULED_TITLE, DEFAULT_TITLE);
+                body = prefs.getString(KEY_SCHEDULED_BODY, DEFAULT_BODY);
+
+                cancelAlarmInternal(context, notifId);
+                if (notifId != 100101) {
+                    cancelAlarmInternal(context, 100101);
+                }
+                clearScheduledState(prefs);
+
+                targetKey = (completedCycleKey != null && !completedCycleKey.isEmpty())
+                    ? completedCycleKey
+                    : scheduledKey;
+
+                if (targetKey == null || targetKey.isEmpty() || targetKey.equals(lastDelivered)) {
+                    return false;
+                }
+
+                boolean wasScheduled = scheduledKey != null && !scheduledKey.isEmpty() && scheduledKey.equals(targetKey);
+                long now = System.currentTimeMillis();
+                boolean withinRecentWindow = triggerAt <= 0L || (now - triggerAt) <= 5 * 60 * 1000L;
+
+                prefs.edit().putString(KEY_LAST_DELIVERED_CYCLE_KEY, targetKey).commit();
+                shouldDeliver = wasScheduled && withinRecentWindow;
+            }
+
+            if (shouldDeliver) {
+                Log.i(TAG, "completeAndDeliverIfPending: delivering notification for cycleKey=" + targetKey);
+                showCycleCompletedNotification(
+                    context,
+                    notifId,
+                    targetKey,
+                    triggerAt > 0L ? triggerAt : cycleEndMs,
+                    title,
+                    body
+                );
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Exception in completeAndDeliverIfPending", e);
+            return false;
         }
     }
 
@@ -339,6 +597,7 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
                 context,
                 notificationId,
                 "",
+                0L,
                 DEFAULT_TITLE,
                 DEFAULT_BODY,
                 true
@@ -355,13 +614,17 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
         Context context,
         int notificationId,
         String cycleKey,
+        long triggerAtMs,
         String title,
         String body,
         boolean noCreate
     ) {
         Intent intent = new Intent(context, MiningNotificationReceiver.class);
+        intent.setPackage(context.getPackageName());
         intent.setAction(ACTION_MINING_CYCLE_COMPLETED);
+        intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
         intent.putExtra("cycle_key", cycleKey != null ? cycleKey : "");
+        intent.putExtra("trigger_at_ms", triggerAtMs);
         intent.putExtra("notification_id", notificationId);
         intent.putExtra("title", title != null ? title : DEFAULT_TITLE);
         intent.putExtra("body", body != null ? body : DEFAULT_BODY);
@@ -370,7 +633,8 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
-        return PendingIntent.getBroadcast(context, 100101, intent, flags);
+        int requestCode = notificationId > 0 ? notificationId : 100101;
+        return PendingIntent.getBroadcast(context, requestCode, intent, flags);
     }
 
     private static void rescheduleAfterBoot(Context context) {
@@ -381,8 +645,13 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
             int notifId = prefs.getInt(KEY_SCHEDULED_NOTIF_ID, 100101);
             String title = prefs.getString(KEY_SCHEDULED_TITLE, DEFAULT_TITLE);
             String body = prefs.getString(KEY_SCHEDULED_BODY, DEFAULT_BODY);
+            String lastDelivered = prefs.getString(KEY_LAST_DELIVERED_CYCLE_KEY, "");
 
             if (cycleKey == null || cycleKey.isEmpty() || triggerAt <= 0L) {
+                return;
+            }
+            if (cycleKey.equals(lastDelivered)) {
+                clearScheduledState(prefs);
                 return;
             }
 
@@ -394,14 +663,15 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
                     .remove(KEY_SCHEDULED_CYCLE_KEY)
                     .remove(KEY_SCHEDULED_TRIGGER_AT)
                     .remove(KEY_SCHEDULED_NOTIF_ID)
-                    .apply();
+                    .commit();
                 showCycleCompletedNotification(context, notifId, cycleKey, triggerAt, title, body);
             } else {
-                // Clear and re-register alarm for remaining time
-                prefs.edit().remove(KEY_SCHEDULED_CYCLE_KEY).apply();
+                // Re-register alarm for remaining time
+                prefs.edit().remove(KEY_SCHEDULED_CYCLE_KEY).commit();
                 scheduleAlarm(context, cycleKey, triggerAt, notifId, title, body);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.e(TAG, "Exception in rescheduleAfterBoot", e);
         }
     }
 
@@ -410,6 +680,6 @@ public class MiningNotificationReceiver extends BroadcastReceiver {
             .remove(KEY_SCHEDULED_CYCLE_KEY)
             .remove(KEY_SCHEDULED_TRIGGER_AT)
             .remove(KEY_SCHEDULED_NOTIF_ID)
-            .apply();
+            .commit();
     }
 }

@@ -821,6 +821,7 @@ async function runTests() {
 
     const storageMap = new Map<string, string>();
     const scheduledAlarms: Array<{ cycleKey: string; triggerAtEpochMs: number; notificationId: number; title: string; body: string }> = [];
+    const completedDeliveries: Array<{ cycleKey: string; cycleEndMs: number }> = [];
     let cancelCount = 0;
     let permStatus = 'prompt';
     let requestPermCalls = 0;
@@ -849,16 +850,21 @@ async function runTests() {
           scheduledAlarms.push({ cycleKey, triggerAtEpochMs, notificationId, title, body });
           return true;
         },
+        completeMiningCycleNotification: (cycleKey: string, cycleEndMs: number) => {
+          completedDeliveries.push({ cycleKey, cycleEndMs });
+          return true;
+        },
         cancelMiningCycleNotification: () => {
           cancelCount++;
         },
         getScheduledMiningCycleNotification: () => {
           const last = scheduledAlarms[scheduledAlarms.length - 1];
+          const lastDelivered = completedDeliveries[completedDeliveries.length - 1];
           return JSON.stringify({
             cycleKey: last?.cycleKey ?? '',
             triggerAtMs: last?.triggerAtEpochMs ?? 0,
             notificationId: last?.notificationId ?? 0,
-            lastDeliveredCycleKey: '',
+            lastDeliveredCycleKey: lastDelivered?.cycleKey ?? '',
           });
         },
       },
@@ -898,18 +904,19 @@ async function runTests() {
       serverTime: serverNow,
     };
 
-    await syncMiningCycleNotification(activeStatus, 'usr_g_b7d1e0d22f16c08b');
+    await syncMiningCycleNotification(activeStatus, null);
     assert.strictEqual(scheduledAlarms.length, 1, 'Must schedule 1 notification for active cycle');
     assert.strictEqual(scheduledAlarms[0].triggerAtEpochMs, authoritativeEnd, 'Must use exact server nextMiningAvailableAt');
     assert.strictEqual(scheduledAlarms[0].title, 'Mining cycle completed 🎉');
+    assert.strictEqual(scheduledAlarms[0].body, 'Your mining cycle is complete. Tap to start your next cycle.');
     assert.strictEqual(scheduledAlarms[0].cycleKey, buildCycleNotificationKey(authoritativeEnd, 'usr_g_b7d1e0d22f16c08b'));
     assert.strictEqual(scheduledAlarms[0].notificationId, deriveCycleNotificationId(authoritativeEnd));
 
-    // Re-syncing the same active cycle on app resume must NOT schedule a duplicate notification
+    // Re-syncing the same active cycle on app resume (even when userId arrives later) must NOT schedule a duplicate notification
     await syncMiningCycleNotification(activeStatus, 'usr_g_b7d1e0d22f16c08b');
     assert.strictEqual(scheduledAlarms.length, 1, 'Must prevent duplicate notifications for the same cycle');
 
-    // When cycle completes on server, pending notification is cancelled
+    // When cycle completes on server, completeMiningCycleNotification is invoked once and pending alarm is cleared
     await syncMiningCycleNotification(
       {
         ...activeStatus,
@@ -920,7 +927,29 @@ async function runTests() {
       },
       'usr_g_b7d1e0d22f16c08b'
     );
+    assert.strictEqual(completedDeliveries.length, 1, 'Must invoke completeMiningCycleNotification on completion');
     assert(cancelCount >= 1, 'Must cancel pending notification when cycle is complete');
+
+    // Starting a second mining cycle must schedule a fresh notification with its own cycleKey and notificationId
+    const secondCycleStart = authoritativeEnd + 5000;
+    const secondCycleEnd = secondCycleStart + 3600 * 1000;
+    await syncMiningCycleNotification(
+      {
+        ...activeStatus,
+        status: 'mining',
+        isCooldownActive: true,
+        remainingSeconds: 3600,
+        currentCycleStartTime: secondCycleStart,
+        lastMinedAt: secondCycleStart,
+        nextMiningAvailableAt: secondCycleEnd,
+        totalCyclesCompleted: 5,
+        serverTime: secondCycleStart,
+      },
+      'usr_g_b7d1e0d22f16c08b'
+    );
+    assert.strictEqual(scheduledAlarms.length, 2, 'Second mining cycle must schedule its own notification');
+    assert.notStrictEqual(scheduledAlarms[1].cycleKey, scheduledAlarms[0].cycleKey, 'Second cycle must have distinct cycleKey');
+    assert.strictEqual(scheduledAlarms[1].triggerAtEpochMs, secondCycleEnd, 'Second cycle must schedule at secondCycleEnd');
 
     delete (globalThis as any).window;
     delete (globalThis as any).localStorage;

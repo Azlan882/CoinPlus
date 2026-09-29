@@ -539,8 +539,12 @@ export default function App() {
       const nextRemaining = computeRemainingFromStatus(statusObj);
       setRemainingSeconds(nextRemaining);
 
-      // Keep backend container warm during 1-hour mining cycles and pre-warm 15s before cycle completion
+      const isAppHidden =
+        typeof document !== 'undefined' && document.visibilityState === 'hidden';
+
+      // Keep backend container warm during 1-hour mining cycles when visible
       if (
+        !isAppHidden &&
         nextRemaining > 0 &&
         (nextRemaining === 15 || nextRemaining % 180 === 0) &&
         Date.now() - lastSyncAtRef.current > 30_000
@@ -550,6 +554,7 @@ export default function App() {
       }
 
       if (
+        !isAppHidden &&
         nextRemaining === 0 &&
         statusObj.isCooldownActive &&
         statusObj.nextMiningAvailableAt > 0 &&
