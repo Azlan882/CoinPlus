@@ -68,8 +68,7 @@ function buildAuthoritativeMiningStatus(user: User) {
     cycleStatus = 'available';
   }
 
-  const referrals = db.getReferralsByInviter(freshUser.id);
-  const activeReferralsCount = referrals.filter((r) => r.status === 'activated').length;
+  const rateInfo = db.reconcileUserMiningRate(freshUser.id);
   const stateCheckpoint = generateStateCheckpoint(freshUser.id) || undefined;
 
   return {
@@ -82,10 +81,10 @@ function buildAuthoritativeMiningStatus(user: User) {
     currentCycleStartTime: miningState.currentCycleStartTime,
     lastMinedAt: miningState.lastMinedAt,
     totalCyclesCompleted: miningState.totalCyclesCompleted,
-    baseMiningRate: freshUser.baseMiningRate,
-    bonusMiningRate: freshUser.bonusMiningRate,
-    totalMiningRate: freshUser.totalMiningRate,
-    activeReferralsCount,
+    baseMiningRate: rateInfo.baseRate,
+    bonusMiningRate: rateInfo.bonusRate,
+    totalMiningRate: rateInfo.totalRate,
+    activeReferralsCount: rateInfo.activeReferralCount,
     stateCheckpoint,
     serverTime: now,
   };
@@ -672,12 +671,16 @@ router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response): 
   const referrals = db.getReferralsByInviter(user.id);
   const rateHistory = db.getRateHistory(user.id);
 
+  const freshToken = generateToken(freshUser);
+  res.setHeader('X-CoinPulse-Token', freshToken);
+
   if (miningState.stateCheckpoint) {
     res.setHeader('X-CoinPulse-Checkpoint', miningState.stateCheckpoint);
   }
 
   res.json({
     success: true,
+    token: freshToken,
     user: sanitizeUser(freshUser),
     balance,
     miningState,
@@ -808,6 +811,7 @@ router.get('/transactions', requireAuth, (req: AuthenticatedRequest, res: Respon
 
 router.get('/referrals', requireAuth, (req: AuthenticatedRequest, res: Response): void => {
   const user = req.user!;
+  const rateInfo = db.reconcileUserMiningRate(user.id);
   const rawReferrals = db.getReferralsByInviter(user.id);
 
   // Map to friendly format without exposing sensitive referred user details
@@ -833,10 +837,10 @@ router.get('/referrals', requireAuth, (req: AuthenticatedRequest, res: Response)
     referralCode: user.referralCode,
     inviteLink,
     baseBonusPerReferral: 0.01,
-    activeBonusRate: user.bonusMiningRate,
-    totalReferrals: referrals.length,
-    activatedReferrals: referrals.filter((r) => r.status === 'activated').length,
-    pendingReferrals: referrals.filter((r) => r.status === 'pending').length,
+    activeBonusRate: rateInfo.bonusRate,
+    totalReferrals: rateInfo.totalReferralCount,
+    activatedReferrals: rateInfo.activeReferralCount,
+    pendingReferrals: rawReferrals.filter((r) => r.status === 'pending').length,
     referrals,
   });
 });
@@ -1058,8 +1062,107 @@ router.get('/admin/security-events', requireAdmin, (req: AuthenticatedRequest, r
 });
 
 // -------------------------------------------------------------
+// 6.5 PULSE MINER ARCADE GAME ENDPOINTS
+// -------------------------------------------------------------
+
+export const PULSE_MINER_LEVELS = [
+  { levelId: 1, name: 'Crystal Cavern', targetScore: 80, timeLimitSeconds: 45, rewardPoints: 10, hazardSpeed: 2.5, spawnIntervalMs: 1600, minDuration: 4 },
+  { levelId: 2, name: 'Asteroid Belt', targetScore: 120, timeLimitSeconds: 45, rewardPoints: 15, hazardSpeed: 3.2, spawnIntervalMs: 1300, minDuration: 4 },
+  { levelId: 3, name: 'Plasma Storm', targetScore: 160, timeLimitSeconds: 40, rewardPoints: 20, hazardSpeed: 3.8, spawnIntervalMs: 1100, minDuration: 4 },
+  { levelId: 4, name: 'Neon Ridge', targetScore: 200, timeLimitSeconds: 40, rewardPoints: 25, hazardSpeed: 4.3, spawnIntervalMs: 950, minDuration: 4 },
+  { levelId: 5, name: 'Vortex Core', targetScore: 240, timeLimitSeconds: 38, rewardPoints: 30, hazardSpeed: 4.8, spawnIntervalMs: 850, minDuration: 4 },
+  { levelId: 6, name: 'Solar Flare', targetScore: 280, timeLimitSeconds: 36, rewardPoints: 40, hazardSpeed: 5.3, spawnIntervalMs: 750, minDuration: 4 },
+  { levelId: 7, name: 'Dark Matter Trench', targetScore: 320, timeLimitSeconds: 35, rewardPoints: 50, hazardSpeed: 5.8, spawnIntervalMs: 700, minDuration: 4 },
+  { levelId: 8, name: 'Quasar Rift', targetScore: 360, timeLimitSeconds: 35, rewardPoints: 60, hazardSpeed: 6.3, spawnIntervalMs: 650, minDuration: 4 },
+  { levelId: 9, name: 'Singularity Edge', targetScore: 420, timeLimitSeconds: 32, rewardPoints: 75, hazardSpeed: 6.8, spawnIntervalMs: 600, minDuration: 4 },
+  { levelId: 10, name: 'Pulse Core Apex', targetScore: 500, timeLimitSeconds: 30, rewardPoints: 100, hazardSpeed: 7.4, spawnIntervalMs: 550, minDuration: 4 },
+];
+
+router.get('/game/pulse-miner/state', requireAuth, (req: AuthenticatedRequest, res: Response): void => {
+  const user = req.user!;
+  const gameState = db.getPulseMinerState(user.id);
+  const balance = db.getBalance(user.id);
+
+  res.json({
+    success: true,
+    levels: PULSE_MINER_LEVELS,
+    state: gameState,
+    balance: {
+      totalBalance: balance.totalBalance,
+      totalMined: balance.totalMined,
+      totalReferralBonus: balance.totalReferralBonus,
+      lastCalculatedAt: balance.lastCalculatedAt,
+    },
+    disclaimer: 'Coin Pulse points are virtual simulation tokens only with no monetary, cryptocurrency, or real cash value.',
+  });
+});
+
+router.post('/game/pulse-miner/claim-reward', requireAuth, (req: AuthenticatedRequest, res: Response): void => {
+  const user = req.user!;
+  const { levelId, claimId, score, durationSeconds } = req.body || {};
+
+  if (!levelId || !claimId || typeof score !== 'number') {
+    res.status(400).json({
+      success: false,
+      error: 'Missing required claim parameters: levelId, claimId, and score are required.',
+    });
+    return;
+  }
+
+  const levelConfig = PULSE_MINER_LEVELS.find((l) => l.levelId === Number(levelId));
+  if (!levelConfig) {
+    res.status(400).json({
+      success: false,
+      error: `Invalid levelId ${levelId}. Level must be between 1 and 10.`,
+    });
+    return;
+  }
+
+  if (score < levelConfig.targetScore) {
+    res.status(400).json({
+      success: false,
+      error: `Score of ${score} does not meet level target objective of ${levelConfig.targetScore}.`,
+    });
+    return;
+  }
+
+  try {
+    const result = db.claimPulseMinerReward(
+      user.id,
+      Number(levelId),
+      String(claimId),
+      Number(score),
+      Number(durationSeconds || 0)
+    );
+
+    const checkpoint = generateStateCheckpoint(user.id) || undefined;
+
+    res.json({
+      success: true,
+      rewardPoints: result.rewardPoints,
+      balance: {
+        totalBalance: result.balance.totalBalance,
+        totalMined: result.balance.totalMined,
+        totalReferralBonus: result.balance.totalReferralBonus,
+        lastCalculatedAt: result.balance.lastCalculatedAt,
+      },
+      state: result.state,
+      isDuplicateClaim: result.isDuplicateClaim || false,
+      message: result.message,
+      stateCheckpoint: checkpoint,
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: err.message || 'Failed to claim Pulse Miner level reward.',
+    });
+  }
+});
+
+// -------------------------------------------------------------
 // 7. API DOCUMENTATION ENDPOINT
 // -------------------------------------------------------------
+
 
 router.get('/docs', (_req: Request, res: Response): void => {
   res.json({

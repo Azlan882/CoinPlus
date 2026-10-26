@@ -22,8 +22,10 @@ import { AdminPortal } from './components/AdminPortal.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { ApkDownloadModal } from './components/ApkDownloadModal.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
-import { AlertCircle, WifiOff } from 'lucide-react';
+import { PulseMinerGame } from './components/PulseMiner/PulseMinerGame.tsx';
+import { AlertCircle, WifiOff, Gamepad2, Sparkles, ChevronRight } from 'lucide-react';
 import { sounds } from './utils/audio.ts';
+
 import {
   requestNotificationPermissionAfterSignIn,
   syncMiningCycleNotification,
@@ -53,6 +55,7 @@ export default function App() {
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
   const [serverClockOffset, setServerClockOffset] = useState<number>(0);
   const [resumeSyncTick, setResumeSyncTick] = useState<number>(0);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const timerRef = useRef<number | null>(null);
   const serverClockOffsetRef = useRef<number>(0);
@@ -61,6 +64,8 @@ export default function App() {
   const cooldownCompletionSyncedRef = useRef<boolean>(false);
   const latestSyncRequestIdRef = useRef<number>(0);
   const latestAppliedServerTimeRef = useRef<number>(0);
+  const syncRetryCountRef = useRef<number>(0);
+  const syncRetryTimerRef = useRef<number | null>(null);
 
   const updateServerClockOffset = useCallback((liveServerTime?: number) => {
     if (typeof liveServerTime === 'number' && liveServerTime > 0) {
@@ -159,84 +164,134 @@ export default function App() {
   };
 
   // Sync authoritative state from server (immediately requests GET /api/mining/status and GET /api/auth/me)
-  const syncServerData = useCallback(async () => {
-    if (!api.getToken()) {
-      setIsMiningSyncing(false);
-      return;
-    }
+  const syncServerData = useCallback(
+    async (options?: { isManualRetry?: boolean }) => {
+      if (options?.isManualRetry) {
+        syncRetryCountRef.current = 0;
+        setSyncError(null);
+        if (syncRetryTimerRef.current) {
+          window.clearTimeout(syncRetryTimerRef.current);
+          syncRetryTimerRef.current = null;
+        }
+      }
 
-    const reqId = ++latestSyncRequestIdRef.current;
-    if (!miningStatusRef.current) {
-      setIsMiningSyncing(true);
-    }
-
-    try {
-      setIsRefreshing(true);
-      lastSyncAtRef.current = Date.now();
-
-      // Immediately request GET /api/mining/status so authoritative timer renders as fast as possible
-      const miningPromise = api
-        .getMiningStatus()
-        .then((statusRes) => {
-          if (reqId >= latestSyncRequestIdRef.current || statusRes.serverTime >= latestAppliedServerTimeRef.current) {
-            applyAuthoritativeMiningStatus(statusRes, { isLiveServerResponse: true });
-            setResumeSyncTick((t) => t + 1);
-          }
-          return statusRes;
-        })
-        .catch(() => null);
-
-      const [meRes, directMiningStatus] = await Promise.all([api.getMe(), miningPromise]);
-
-      // Ignore if a newer sync request started while this one was in flight and already applied newer state
-      if (reqId < latestSyncRequestIdRef.current && (meRes.serverTime ?? 0) < latestAppliedServerTimeRef.current) {
+      if (!api.getToken()) {
+        setIsMiningSyncing(false);
+        setSyncError(null);
         return;
       }
 
-      const authoritativeMining: MiningStatusResponse =
-        directMiningStatus && (directMiningStatus.serverTime ?? 0) >= (meRes.miningState?.serverTime ?? 0)
-          ? directMiningStatus
-          : meRes.miningState || directMiningStatus;
+      if (!navigator.onLine) {
+        setIsMiningSyncing(false);
+        setIsRefreshing(false);
+        setSyncError('Offline: Network connection unavailable');
+        return;
+      }
 
-      const nextBalance: BalanceState = {
-        balance: meRes.balance.totalBalance,
-        totalMined: meRes.balance.totalMined,
-        totalReferralBonus: meRes.balance.totalReferralBonus,
-        lastCalculatedAt: meRes.balance.lastCalculatedAt,
-        integrityVerified: true,
-      };
-      currentUserIdRef.current = meRes.user.id;
-      setCurrentUser(meRes.user);
-      setBalance(nextBalance);
-      if (authoritativeMining) {
-        applyAuthoritativeMiningStatus(authoritativeMining, { isLiveServerResponse: true });
+      const reqId = ++latestSyncRequestIdRef.current;
+      if (!miningStatusRef.current) {
+        setIsMiningSyncing(true);
       }
-      api.setCachedSession({
-        user: meRes.user,
-        balance: nextBalance,
-        miningState: null,
-        updatedAt: Date.now(),
-      });
-      setResumeSyncTick((t) => t + 1);
-    } catch (err: any) {
-      console.error('Data sync failed:', err);
-      if (err?.status === 401 && !api.getToken()) {
-        setCurrentUser(null);
-        setBalance(null);
-        applyAuthoritativeMiningStatus(null);
-        setIsAuthOpen(true);
-      } else {
-        // Transient cold-start or network issue: retry GET /api/mining/status and GET /api/auth/me in background
-        window.setTimeout(() => {
-          if (api.getToken()) {
-            syncServerData();
+
+      try {
+        setIsRefreshing(true);
+        lastSyncAtRef.current = Date.now();
+
+        // Immediately request GET /api/mining/status so authoritative timer renders as fast as possible
+        const miningPromise = api
+          .getMiningStatus()
+          .then((statusRes) => {
+            if (reqId >= latestSyncRequestIdRef.current || statusRes.serverTime >= latestAppliedServerTimeRef.current) {
+              applyAuthoritativeMiningStatus(statusRes, { isLiveServerResponse: true });
+              setResumeSyncTick((t) => t + 1);
+            }
+            return statusRes;
+          })
+          .catch(() => null);
+
+        const [meRes, directMiningStatus] = await Promise.all([api.getMe(), miningPromise]);
+
+        // Ignore if a newer sync request started while this one was in flight and already applied newer state
+        if (reqId < latestSyncRequestIdRef.current && (meRes.serverTime ?? 0) < latestAppliedServerTimeRef.current) {
+          return;
+        }
+
+        const authoritativeMining: MiningStatusResponse =
+          directMiningStatus && (directMiningStatus.serverTime ?? 0) >= (meRes.miningState?.serverTime ?? 0)
+            ? directMiningStatus
+            : meRes.miningState || directMiningStatus;
+
+        const nextBalance: BalanceState = {
+          balance: meRes.balance.totalBalance,
+          totalMined: meRes.balance.totalMined,
+          totalReferralBonus: meRes.balance.totalReferralBonus,
+          lastCalculatedAt: meRes.balance.lastCalculatedAt,
+          integrityVerified: true,
+        };
+        currentUserIdRef.current = meRes.user.id;
+        setCurrentUser(meRes.user);
+        setBalance(nextBalance);
+        if (authoritativeMining) {
+          applyAuthoritativeMiningStatus(authoritativeMining, { isLiveServerResponse: true });
+        }
+        api.setCachedSession({
+          user: meRes.user,
+          balance: nextBalance,
+          miningState: null,
+          updatedAt: Date.now(),
+        });
+
+        // Reset retry counters on successful sync
+        syncRetryCountRef.current = 0;
+        setSyncError(null);
+        setIsMiningSyncing(false);
+        setResumeSyncTick((t) => t + 1);
+      } catch (err: any) {
+        console.error('Data sync failed:', err);
+        setIsMiningSyncing(false);
+
+        if (err?.status === 401) {
+          api.setToken(null);
+          api.setCachedSession(null);
+          currentUserIdRef.current = null;
+          setCurrentUser(null);
+          setBalance(null);
+          applyAuthoritativeMiningStatus(null);
+          setSyncError('Session expired. Please sign in with Google to resume mining.');
+          showNotification('Session expired. Please sign in with Google.', 'error');
+          setIsAuthOpen(true);
+          if (syncRetryTimerRef.current) {
+            window.clearTimeout(syncRetryTimerRef.current);
+            syncRetryTimerRef.current = null;
           }
-        }, 2000);
+        } else {
+          const rawMsg = err?.serverMessage || err?.message || 'Unable to synchronize with server';
+          const isNetworkErr = err?.errorCategory === 'network' || !navigator.onLine;
+          const displayErr = isNetworkErr ? 'Network connection lost' : rawMsg;
+
+          if (syncRetryCountRef.current < 3) {
+            syncRetryCountRef.current += 1;
+            const retryDelay = Math.min(6000, 1500 * Math.pow(2, syncRetryCountRef.current - 1));
+            setSyncError(`Sync paused (${displayErr}). Retrying in ${Math.round(retryDelay / 1000)}s...`);
+            if (syncRetryTimerRef.current) {
+              window.clearTimeout(syncRetryTimerRef.current);
+            }
+            syncRetryTimerRef.current = window.setTimeout(() => {
+              syncRetryTimerRef.current = null;
+              if (api.getToken()) {
+                syncServerData();
+              }
+            }, retryDelay);
+          } else {
+            setSyncError(`${displayErr}. Tap to retry.`);
+          }
+        }
+      } finally {
+        setIsRefreshing(false);
       }
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [applyAuthoritativeMiningStatus]);
+    },
+    [applyAuthoritativeMiningStatus]
+  );
 
   // Fetch referrals data when switching to team tab
   const fetchReferrals = useCallback(async () => {
@@ -265,10 +320,14 @@ export default function App() {
     const handleOnline = () => {
       setIsOffline(false);
       if (api.getToken()) {
-        syncServerData();
+        syncServerData({ isManualRetry: true });
       }
     };
-    const handleOffline = () => setIsOffline(true);
+    const handleOffline = () => {
+      setIsOffline(true);
+      setIsMiningSyncing(false);
+      setSyncError('Offline: Network connection unavailable');
+    };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
@@ -522,6 +581,10 @@ export default function App() {
           .then((handle: any) => handle?.remove?.())
           .catch(() => {});
       }
+      if (syncRetryTimerRef.current) {
+        window.clearTimeout(syncRetryTimerRef.current);
+        syncRetryTimerRef.current = null;
+      }
     };
   }, [applyAuthoritativeMiningStatus, computeRemainingFromStatus, syncServerData]);
 
@@ -769,7 +832,9 @@ export default function App() {
               bonusRate={miningStatus?.bonusMiningRate ?? 0.0}
               remainingSeconds={remainingSeconds}
               isMiningLoading={isMiningLoading}
-              isSyncing={!hasAuthoritativeMiningState && Boolean(currentUser || isMiningSyncing || api.getToken())}
+              isSyncing={!hasAuthoritativeMiningState && !syncError && Boolean(currentUser || isMiningSyncing || api.getToken())}
+              syncError={syncError}
+              onRetrySync={() => syncServerData({ isManualRetry: true })}
               onMineClick={handleMine}
               serverSyncTime={miningStatus?.serverTime ?? Date.now()}
               nextMiningAvailableAt={miningStatus?.nextMiningAvailableAt ?? 0}
@@ -786,10 +851,53 @@ export default function App() {
                 miningStatus={miningStatus}
               />
             )}
+
+            {/* Pulse Miner Mini-Game Home Screen Launcher */}
+            <div className="max-w-md mx-auto px-4">
+              <div
+                onClick={() => setCurrentTab('pulse-miner')}
+                className="group relative overflow-hidden rounded-2xl bg-gradient-to-r from-slate-900 via-cyan-950/40 to-slate-900 border border-cyan-800/60 hover:border-cyan-400 p-4 shadow-lg shadow-cyan-950/40 cursor-pointer transition-all hover:scale-[1.01] active:scale-[0.99]"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 rounded-xl bg-cyan-950 border border-cyan-700/80 text-cyan-400 shadow-md shadow-cyan-500/20 group-hover:bg-cyan-900 transition-colors">
+                      <Gamepad2 className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-mono uppercase tracking-wider text-cyan-400 font-semibold">
+                          Arcade Mini-Game
+                        </span>
+                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      </div>
+                      <h3 className="text-sm font-bold text-white tracking-tight">Pulse Miner</h3>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Collect energy crystals & earn up to <span className="text-emerald-400 font-semibold font-mono">+100 CP</span> per level!
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs font-semibold group-hover:bg-cyan-500 group-hover:text-slate-950 transition-colors shrink-0">
+                    <span>Play</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
+        {currentTab === 'pulse-miner' && (
+          <PulseMinerGame
+            user={currentUser}
+            balance={balance}
+            onBalanceUpdated={syncServerData}
+            onBackToMining={() => setCurrentTab('mining')}
+          />
+        )}
+
         {currentTab === 'team' && (
+
           <ReferralsView
             data={referralsData}
             isLoading={isRefreshing}

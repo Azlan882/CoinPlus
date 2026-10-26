@@ -1,4 +1,60 @@
-export type TabType = 'mining' | 'team' | 'ledger' | 'roadmap' | 'admin';
+export type TabType = 'mining' | 'pulse-miner' | 'team' | 'ledger' | 'roadmap' | 'admin';
+
+export interface PulseMinerLevel {
+  levelId: number;
+  name: string;
+  targetScore: number;
+  timeLimitSeconds: number;
+  rewardPoints: number;
+  hazardSpeed: number;
+  spawnIntervalMs: number;
+  minDuration: number;
+}
+
+export interface PulseMinerClaimRecord {
+  claimedAt: string;
+  rewardPoints: number;
+  claimId: string;
+}
+
+export interface PulseMinerUserState {
+  userId: string;
+  highestUnlockedLevel: number;
+  completedLevels: number[];
+  highScores: Record<number, number>;
+  claimedLevelRewards: Record<number, PulseMinerClaimRecord>;
+  totalGamePointsEarned: number;
+  lastPlayedAt: string;
+}
+
+export interface PulseMinerStateResponse {
+  success: boolean;
+  levels: PulseMinerLevel[];
+  state: PulseMinerUserState;
+  balance: {
+    totalBalance: number;
+    totalMined: number;
+    totalReferralBonus: number;
+    lastCalculatedAt: string;
+  };
+  disclaimer: string;
+}
+
+export interface ClaimRewardResponse {
+  success: boolean;
+  rewardPoints: number;
+  balance: {
+    totalBalance: number;
+    totalMined: number;
+    totalReferralBonus: number;
+    lastCalculatedAt: string;
+  };
+  state: PulseMinerUserState;
+  isDuplicateClaim: boolean;
+  message: string;
+  stateCheckpoint?: string;
+}
+
 
 export interface User {
   id: string;

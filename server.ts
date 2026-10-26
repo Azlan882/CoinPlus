@@ -47,7 +47,10 @@ async function startServer() {
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization, X-CoinPulse-Token, X-CoinPulse-Checkpoint, Accept, Cache-Control, Pragma'
     );
-    res.setHeader('Access-Control-Expose-Headers', 'X-CoinPulse-Checkpoint, X-CoinPulse-Warmup');
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'X-CoinPulse-Checkpoint, X-CoinPulse-Warmup, X-CoinPulse-Token, X-CoinPulse-Token-Refresh'
+    );
     res.setHeader('Access-Control-Max-Age', '86400');
 
     if (req.method === 'OPTIONS') {

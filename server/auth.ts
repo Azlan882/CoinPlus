@@ -4,7 +4,8 @@ import { db } from './db.ts';
 import { User } from './types.ts';
 
 const AUTH_SECRET = process.env.AUTH_SECRET || 'coinpulse-super-secure-production-hmac-key-2026';
-const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const TOKEN_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days active session
+const TOKEN_GRACE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days grace renewal window for authentic miners
 
 export interface TokenPayload {
   userId: string;
@@ -129,6 +130,7 @@ export function verifyPassword(password: string, hash: string, salt: string): bo
 }
 
 export function generateToken(user: User): string {
+  const rateInfo = db.reconcileUserMiningRate(user.id);
   const payload: TokenPayload = {
     userId: user.id,
     googleId: user.googleId,
@@ -137,9 +139,9 @@ export function generateToken(user: User): string {
     picture: user.picture,
     referralCode: user.referralCode,
     role: user.role,
-    baseMiningRate: user.baseMiningRate,
-    bonusMiningRate: user.bonusMiningRate,
-    totalMiningRate: user.totalMiningRate,
+    baseMiningRate: rateInfo.baseRate,
+    bonusMiningRate: rateInfo.bonusRate,
+    totalMiningRate: rateInfo.totalRate,
     iat: Date.now(),
     exp: Date.now() + TOKEN_EXPIRY_MS,
   };
@@ -153,7 +155,10 @@ export function generateToken(user: User): string {
   return `${payloadB64}.${signature}`;
 }
 
-export function verifyToken(token: string): TokenPayload | null {
+export function verifyToken(
+  token: string,
+  options?: { allowGraceExpiry?: boolean }
+): (TokenPayload & { isGraceExpired?: boolean }) | null {
   try {
     const parts = token.split('.');
     if (parts.length !== 2) return null;
@@ -172,6 +177,9 @@ export function verifyToken(token: string): TokenPayload | null {
 
     const payload: TokenPayload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
     if (Date.now() > payload.exp) {
+      if (options?.allowGraceExpiry && Date.now() <= payload.exp + TOKEN_GRACE_MS) {
+        return { ...payload, isGraceExpired: true };
+      }
       return null;
     }
 
@@ -261,7 +269,12 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     return;
   }
 
-  const payload = verifyToken(token);
+  let payload = verifyToken(token);
+  if (!payload) {
+    // Attempt verification within HMAC grace window to seamlessly recover returning active miners
+    payload = verifyToken(token, { allowGraceExpiry: true });
+  }
+
   if (!payload) {
     res.status(401).json({
       success: false,
@@ -345,6 +358,18 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 
   // Update last active
   db.updateUser(user.id, { lastActiveAt: new Date().toISOString() });
+
+  // Issue sliding refresh token if token is grace-recovered or has < 14 days remaining
+  const shouldSlideToken = Boolean(payload.isGraceExpired) || (payload.exp - Date.now() < 14 * 24 * 60 * 60 * 1000);
+  if (shouldSlideToken) {
+    const refreshedToken = generateToken(user);
+    res.setHeader('X-CoinPulse-Token', refreshedToken);
+    res.setHeader('X-CoinPulse-Token-Refresh', 'true');
+    res.setHeader(
+      'Set-Cookie',
+      `coinpulse_session_token=${encodeURIComponent(refreshedToken)}; Path=/; Max-Age=2592000; HttpOnly; SameSite=None; Secure`
+    );
+  }
 
   req.user = user;
   next();

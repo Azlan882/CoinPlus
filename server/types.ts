@@ -79,7 +79,28 @@ export interface MiningRateHistory {
   timestamp: string;
 }
 
-export type TransactionType = 'mining_reward' | 'referral_bonus' | 'admin_adjustment';
+export type TransactionType = 'mining_reward' | 'referral_bonus' | 'admin_adjustment' | 'game_reward';
+
+export interface PulseMinerClaimRecord {
+  id: string; // idempotent claim ID (e.g. claim_${userId}_lvl${levelId}_${timestamp})
+  userId: string;
+  levelId: number;
+  score: number;
+  rewardPoints: number;
+  durationSeconds: number;
+  timestamp: string;
+}
+
+export interface PulseMinerUserState {
+  userId: string;
+  highestUnlockedLevel: number;
+  completedLevels: number[];
+  highScores: Record<number, number>; // levelId -> max score
+  claimedLevelRewards: Record<number, { claimedAt: string; rewardPoints: number; claimId: string }>;
+  totalGamePointsEarned: number;
+  lastPlayedAt: string;
+}
+
 
 export interface TransactionRecord {
   id: string;
@@ -124,4 +145,7 @@ export interface DatabaseSchema {
   rateHistory: MiningRateHistory[];
   transactions: TransactionRecord[];
   securityEvents: SecurityEvent[];
+  pulseMinerStates?: Record<string, PulseMinerUserState>;
+  pulseMinerClaims?: PulseMinerClaimRecord[];
 }
+

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Zap, Clock, TrendingUp, CheckCircle2, ShieldCheck, Flame } from 'lucide-react';
+import { Zap, Clock, TrendingUp, CheckCircle2, ShieldCheck, Flame, AlertTriangle, RotateCw } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { MiningCycleStatus } from '../types.ts';
 import { sounds } from '../utils/audio.ts';
@@ -12,6 +12,8 @@ interface MiningCircleProps {
   remainingSeconds: number;
   isMiningLoading: boolean;
   isSyncing?: boolean;
+  syncError?: string | null;
+  onRetrySync?: () => void;
   onMineClick: () => void;
   serverSyncTime: number;
   nextMiningAvailableAt?: number;
@@ -28,6 +30,8 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
   remainingSeconds,
   isMiningLoading,
   isSyncing = false,
+  syncError = null,
+  onRetrySync,
   onMineClick,
   nextMiningAvailableAt = 0,
   cycleStartTime = null,
@@ -111,7 +115,13 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
   }, [effectiveRemainingSeconds]);
 
   const handleAction = () => {
-    if (isMiningLoading || isSyncing) return;
+    if (isMiningLoading) return;
+    if (syncError) {
+      sounds.playMinePulse();
+      onRetrySync?.();
+      return;
+    }
+    if (isSyncing) return;
     if (status === 'mining') {
       sounds.playCooldownBuzz();
       return;
@@ -135,7 +145,12 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
     <div className="flex flex-col items-center justify-center select-none w-full max-w-sm mx-auto px-4">
       {/* Top Status Pill */}
       <div className="mb-4 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/80 border border-slate-800 backdrop-blur-md shadow-inner text-xs font-medium">
-        {isSyncing ? (
+        {syncError ? (
+          <>
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-amber-300 font-semibold tracking-wide">SYNC PAUSED • TAP RETRY</span>
+          </>
+        ) : isSyncing ? (
           <>
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
             <span className="text-cyan-300 font-semibold tracking-wide">SYNCING SERVER STATE...</span>
@@ -220,10 +235,20 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
         {/* Interactive Center Core */}
         <button
           onClick={handleAction}
-          disabled={isSyncing || status === 'mining' || isMiningLoading}
-          aria-label={isSyncing ? 'Syncing mining status' : status === 'mining' ? 'Mining in progress' : 'Mine Coins'}
+          disabled={(!syncError && isSyncing) || status === 'mining' || isMiningLoading}
+          aria-label={
+            syncError
+              ? 'Retry syncing mining state'
+              : isSyncing
+              ? 'Syncing mining status'
+              : status === 'mining'
+              ? 'Mining in progress'
+              : 'Mine Coins'
+          }
           className={`relative z-10 w-52 h-52 sm:w-56 sm:h-56 rounded-full flex flex-col items-center justify-center p-3 text-center transition-all duration-300 transform active:scale-95 focus:outline-none ${
-            isSyncing
+            syncError
+              ? 'bg-gradient-to-b from-amber-950/40 via-[#181120] to-[#0d0914] border-2 border-amber-500/70 shadow-xl shadow-amber-500/20 hover:border-amber-400 cursor-pointer animate-pulse-ring'
+              : isSyncing
               ? 'bg-gradient-to-b from-[#0e172a] via-[#091122] to-[#050b17] border-2 border-cyan-500/30 shadow-lg shadow-cyan-950/30 cursor-wait'
               : status === 'mining'
               ? 'bg-gradient-to-b from-[#0e172a] via-[#091122] to-[#050b17] border-2 border-emerald-500/40 shadow-lg shadow-emerald-950/40 cursor-default'
@@ -233,7 +258,7 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
           }`}
         >
           {/* Subtle spinning particle halo when mining */}
-          {!isSyncing && status === 'mining' && (
+          {!isSyncing && !syncError && status === 'mining' && (
             <div className="absolute inset-2 rounded-full border border-emerald-400/20 animate-orbit-slow pointer-events-none">
               <span className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-emerald-400 rounded-full shadow-lg shadow-emerald-400/80" />
             </div>
@@ -241,7 +266,11 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
 
           {/* Core Icon */}
           <div className="mb-1.5 transition-transform duration-300">
-            {isSyncing || isMiningLoading ? (
+            {syncError ? (
+              <div className="relative">
+                <RotateCw className="w-9 h-9 text-amber-400" />
+              </div>
+            ) : isSyncing || isMiningLoading ? (
               <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
             ) : status === 'mining' ? (
               <div className="relative">
@@ -260,7 +289,12 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
 
           {/* Primary Action Label */}
           <div className="text-center font-bold tracking-wider">
-            {isSyncing ? (
+            {syncError ? (
+              <div className="flex flex-col items-center">
+                <span className="text-sm font-extrabold text-amber-300 tracking-wider uppercase">RETRY SYNC</span>
+                <span className="text-[11px] text-amber-200/80 font-normal mt-0.5">Tap to reconnect</span>
+              </div>
+            ) : isSyncing ? (
               <div className="flex flex-col items-center">
                 <span className="text-sm text-cyan-300 tracking-widest uppercase">SYNCING...</span>
                 <span className="text-[11px] text-slate-400 font-normal mt-0.5">Loading live timer</span>
@@ -312,6 +346,27 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
           <span>Server Cooldown: <strong className="text-emerald-300">Enforced</strong></span>
         </div>
       </div>
+
+      {/* Inline Sync Error Banner */}
+      {syncError && (
+        <div className="mt-3 w-full p-2.5 rounded-xl bg-amber-950/40 border border-amber-500/40 flex items-center justify-between text-xs text-amber-200">
+          <div className="flex items-center gap-2 truncate pr-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="truncate">{syncError}</span>
+          </div>
+          {onRetrySync && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRetrySync();
+              }}
+              className="px-2.5 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold hover:bg-amber-400 transition-colors shrink-0 cursor-pointer"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 };

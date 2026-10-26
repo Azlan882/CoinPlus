@@ -1,5 +1,5 @@
 import React from 'react';
-import { Zap, Users, FileText, Layers, Shield } from 'lucide-react';
+import { Zap, Users, FileText, Layers, Shield, Gamepad2 } from 'lucide-react';
 import { TabType, User } from '../types.ts';
 
 interface BottomNavProps {
@@ -36,6 +36,26 @@ export const BottomNav: React.FC<BottomNavProps> = ({
           </div>
           <span className="text-[10px] font-mono tracking-tight">Mine</span>
         </button>
+
+        {/* Pulse Miner Arcade Tab */}
+        <button
+          onClick={() => onSelectTab('pulse-miner')}
+          className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
+            currentTab === 'pulse-miner'
+              ? 'text-cyan-400 font-bold'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <div
+            className={`p-1.5 rounded-xl transition-all ${
+              currentTab === 'pulse-miner' ? 'bg-cyan-950 border border-cyan-800/70 shadow-md shadow-cyan-500/20' : ''
+            }`}
+          >
+            <Gamepad2 className="w-5 h-5" />
+          </div>
+          <span className="text-[10px] font-mono tracking-tight">Arcade</span>
+        </button>
+
 
         {/* Team / Referrals Tab */}
         <button

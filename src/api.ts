@@ -7,7 +7,10 @@ import {
   AdminStats,
   AdminUserItem,
   SecurityEventItem,
+  PulseMinerStateResponse,
+  ClaimRewardResponse,
 } from './types.ts';
+
 
 const TOKEN_KEY = 'coinpulse_session_token';
 const CHECKPOINT_KEY = 'coinpulse_state_checkpoint';
@@ -247,6 +250,17 @@ class ApiService {
     }
   }
 
+  private captureTokenFromResponse(response: Response, data: any) {
+    const headerToken = response.headers.get('X-CoinPulse-Token');
+    const bodyToken =
+      (data && typeof data.token === 'string' && data.token) ||
+      (data?.session && typeof data.session.token === 'string' && data.session.token);
+    const token = (headerToken && headerToken.trim()) || (bodyToken && bodyToken.trim());
+    if (token && token !== this.token) {
+      this.setToken(token);
+    }
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -281,6 +295,11 @@ class ApiService {
     // Up to 5 attempts to handle stale Android WebView keep-alive sockets after 1h idle or Cloud Run cold-start warmup
     const maxAttempts = 5;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const abortCtrl = new AbortController();
+      const timeoutId = setTimeout(() => {
+        abortCtrl.abort(new Error('Request timed out after 10000ms'));
+      }, 10000);
+
       try {
         response = await fetch(primaryUrl, {
           cache: 'no-store',
@@ -288,6 +307,7 @@ class ApiService {
           credentials: 'include',
           ...options,
           headers,
+          signal: options.signal || abortCtrl.signal,
         });
 
         rawText = await response.text();
@@ -318,15 +338,22 @@ class ApiService {
           await sleep(Math.min(1500, 350 * attempt));
           continue;
         }
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
     if (!response) {
-      const safeErrDetail = sanitizeDiagnosticText(
-        lastNetworkError && typeof lastNetworkError.message === 'string'
-          ? lastNetworkError.message
-          : 'Unreachable host'
-      );
+      const isTimeout =
+        lastNetworkError?.name === 'AbortError' ||
+        String(lastNetworkError?.message || '').toLowerCase().includes('timed out');
+      const safeErrDetail = isTimeout
+        ? 'Connection timed out after 10s'
+        : sanitizeDiagnosticText(
+            lastNetworkError && typeof lastNetworkError.message === 'string'
+              ? lastNetworkError.message
+              : 'Unreachable host'
+          );
       console.error(`[CoinPulse API] Network failure on ${method} ${cleanEndpoint} (${safeErrDetail})`);
       const netErr: ApiError = new Error(
         `Network failure: Unable to reach server (${safeErrDetail}) [${method} ${cleanEndpoint}]`
@@ -346,6 +373,7 @@ class ApiService {
     }
 
     this.captureCheckpointFromResponse(response, data);
+    this.captureTokenFromResponse(response, data);
 
     if (!response.ok) {
       if (
@@ -649,6 +677,24 @@ class ApiService {
       `/api/admin/security-events?limit=${limit}`
     );
   }
+
+  // --- Pulse Miner Game ---
+  async getPulseMinerState(): Promise<PulseMinerStateResponse> {
+    return this.request<PulseMinerStateResponse>('/api/game/pulse-miner/state');
+  }
+
+  async claimPulseMinerReward(
+    levelId: number,
+    claimId: string,
+    score: number,
+    durationSeconds: number
+  ): Promise<ClaimRewardResponse> {
+    return this.request<ClaimRewardResponse>('/api/game/pulse-miner/claim-reward', {
+      method: 'POST',
+      body: JSON.stringify({ levelId, claimId, score, durationSeconds }),
+    });
+  }
 }
 
 export const api = new ApiService();
+

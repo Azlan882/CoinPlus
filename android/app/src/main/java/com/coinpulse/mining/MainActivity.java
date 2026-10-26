@@ -233,7 +233,7 @@ public class MainActivity extends BridgeActivity {
                 } else {
                     editor.putString(KEY_TOKEN, token.trim());
                 }
-                editor.apply();
+                editor.commit();
             } catch (Exception ignored) {
             }
         }
@@ -251,7 +251,7 @@ public class MainActivity extends BridgeActivity {
         public void setPersistedCheckpoint(final String ckpt) {
             try {
                 if (ckpt != null && !ckpt.trim().isEmpty()) {
-                    getAuthPrefs().edit().putString(KEY_CKPT, ckpt.trim()).apply();
+                    getAuthPrefs().edit().putString(KEY_CKPT, ckpt.trim()).commit();
                 }
             } catch (Exception ignored) {
             }
@@ -260,7 +260,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void clearPersistedSession() {
             try {
-                getAuthPrefs().edit().remove(KEY_TOKEN).apply();
+                getAuthPrefs().edit().remove(KEY_TOKEN).commit();
                 pendingToken = "";
                 pendingSid = "";
                 pendingError = "";

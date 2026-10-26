@@ -955,8 +955,300 @@ async function runTests() {
     delete (globalThis as any).localStorage;
   });
 
-  // Clean up all temporary test users so only real accounts remain in /data/coinpulse_database.json
+  // 20. Session Resilience & Indefinite Syncing Prevention
+  await test('Session Resilience: Grace period recovery for authentic returning miners & indefinite syncing prevention', async () => {
+    // 1. Create a token that expired 10 days ago (simulating 1-week+ old session)
+    const existingMiner = db.getUserById('usr_g_b7d1e0d22f16c08b')!;
+    assert(existingMiner, 'Existing miner account must exist');
+    const pastIat = Date.now() - 40 * 24 * 60 * 60 * 1000;
+    const pastExp = Date.now() - 10 * 24 * 60 * 60 * 1000; // Expired 10 days ago
+
+    const payloadObj = {
+      userId: existingMiner.id,
+      googleId: existingMiner.googleId,
+      email: existingMiner.email,
+      username: existingMiner.username,
+      picture: existingMiner.picture,
+      referralCode: existingMiner.referralCode,
+      role: existingMiner.role,
+      baseMiningRate: existingMiner.baseMiningRate,
+      bonusMiningRate: existingMiner.bonusMiningRate,
+      totalMiningRate: existingMiner.totalMiningRate,
+      iat: pastIat,
+      exp: pastExp,
+    };
+    const crypto = await import('node:crypto');
+    const AUTH_SECRET = process.env.AUTH_SECRET || 'coinpulse-super-secure-production-hmac-key-2026';
+    const payloadB64 = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
+    const signature = crypto.createHmac('sha256', AUTH_SECRET).update(payloadB64).digest('base64url');
+    const expiredValidHmacToken = `${payloadB64}.${signature}`;
+
+    // Standard verifyToken without grace option returns null
+    const standardVerify = verifyToken(expiredValidHmacToken);
+    assert.strictEqual(standardVerify, null, 'Strict verification must return null for expired token');
+
+    // Verification with allowGraceExpiry recovers authentic miner
+    const graceVerify = verifyToken(expiredValidHmacToken, { allowGraceExpiry: true });
+    assert(graceVerify !== null, 'Grace verification must succeed for authentic HMAC token');
+    assert.strictEqual(graceVerify?.userId, existingMiner.id, 'User ID in grace payload must match miner');
+    assert.strictEqual(graceVerify?.isGraceExpired, true, 'isGraceExpired flag must be set');
+
+    // Tampered token must still be rejected even with allowGraceExpiry
+    const tamperedGrace = `${Buffer.from(JSON.stringify({ ...payloadObj, userId: 'usr_hacker' })).toString('base64url')}.${signature}`;
+    assert.strictEqual(verifyToken(tamperedGrace, { allowGraceExpiry: true }), null, 'Tampered token in grace mode must fail');
+
+    // Ensure fresh token generation gives 30-day lifespan
+    const freshToken = generateToken(existingMiner);
+    const freshPayload = verifyToken(freshToken);
+    assert(freshPayload !== null, 'Fresh token must verify');
+    const expectedExpiryWindow = 30 * 24 * 60 * 60 * 1000;
+    const diff = (freshPayload?.exp ?? 0) - (freshPayload?.iat ?? 0);
+    assert(Math.abs(diff - expectedExpiryWindow) < 2000, 'Fresh token lifetime must be 30 days');
+  });
+
+  // 21. Pulse Miner Game: Initial State & Level Unlocking
+  await test('Pulse Miner: Initial State & Level 1 Reward Claiming', async () => {
+    const gamerId = `usr_test_gamer_${Date.now()}`;
+    const gamer: User = {
+      id: gamerId,
+      username: `gamer_${Date.now()}`,
+      email: `gamer_${Date.now()}@pulse.internal`,
+      referralCode: `GM_${Date.now()}`.slice(0, 10),
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(gamer, 0.0);
+
+    const initState = db.getPulseMinerState(gamerId);
+    assert.strictEqual(initState.highestUnlockedLevel, 1, 'Initial highest unlocked level must be 1');
+    assert.strictEqual(initState.completedLevels.length, 0, 'No levels should be completed initially');
+
+    // Claim level 1 reward
+    const claim1Id = `claim_${gamerId}_lvl1_${Date.now()}`;
+    const claimRes = db.claimPulseMinerReward(gamerId, 1, claim1Id, 95, 12);
+    assert.strictEqual(claimRes.success, true, 'Claim must succeed');
+    assert.strictEqual(claimRes.rewardPoints, 10, 'Level 1 reward must be 10 CP');
+    assert.strictEqual(claimRes.balance.totalBalance, 10.0, 'Balance must be credited with exactly 10 CP');
+    assert.strictEqual(claimRes.state.highestUnlockedLevel, 2, 'Level 2 must be unlocked');
+    assert(claimRes.state.completedLevels.includes(1), 'Level 1 must be marked completed');
+  });
+
+  // 22. Pulse Miner Game: Idempotency & Anti-Abuse Validation
+  await test('Pulse Miner: Idempotency, Duplicate Protection & Anti-Abuse', async () => {
+    const gamerId = `usr_test_gamer2_${Date.now()}`;
+    const gamer: User = {
+      id: gamerId,
+      username: `gamer2_${Date.now()}`,
+      email: `gamer2_${Date.now()}@pulse.internal`,
+      referralCode: `GM2_${Date.now()}`.slice(0, 10),
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(gamer, 0.0);
+
+    // Anti-abuse: Duration too short (<4s) must throw error
+    assert.throws(
+      () => db.claimPulseMinerReward(gamerId, 1, `claim_fast_${Date.now()}`, 100, 1),
+      /Invalid gameplay duration/,
+      'Instant bot claims must be rejected'
+    );
+
+    // Valid claim Level 1
+    const claimId = `claim_idem_${gamerId}_lvl1`;
+    const res1 = db.claimPulseMinerReward(gamerId, 1, claimId, 110, 15);
+    assert.strictEqual(res1.rewardPoints, 10, 'Should award 10 CP');
+    assert.strictEqual(res1.balance.totalBalance, 10.0);
+
+    // Duplicate identical claim submission: must be idempotent and NOT award duplicate points
+    const res2 = db.claimPulseMinerReward(gamerId, 1, claimId, 110, 15);
+    assert.strictEqual(res2.isDuplicateClaim, true, 'Must detect duplicate claim');
+    assert.strictEqual(res2.balance.totalBalance, 10.0, 'Balance must NOT change on duplicate claim');
+
+    // Replay level with different claimId: updates high score but awards 0 duplicate completion CP
+    const replayClaimId = `claim_replay_${gamerId}_lvl1`;
+    const res3 = db.claimPulseMinerReward(gamerId, 1, replayClaimId, 140, 18);
+    assert.strictEqual(res3.rewardPoints, 0, 'Replay must award 0 CP once level completion reward is already collected');
+    assert.strictEqual(res3.state.highScores[1], 140, 'High score must be updated to 140');
+    assert.strictEqual(res3.balance.totalBalance, 10.0, 'Balance must remain 10.0 CP');
+
+    // Check balance cryptographic ledger integrity
+    const integrity = db.verifyBalanceIntegrity(gamerId);
+    assert.strictEqual(integrity.isValid, true, 'Balance integrity checksum must remain valid');
+  });
+
+  // 23. Referral System Integrity & Permanent Mining Rate Persistence
+  await test('Referral Integrity: 0.12 base -> 0.13 with 1 ref -> 0.14 with 2 refs, persistence, anti-abuse & primary user status', async () => {
+    // 1. New account starts at base rate 0.12 CP/hr
+    const inviterId = `usr_test_inv_${Date.now()}`;
+    const inviterUser: User = {
+      id: inviterId,
+      username: `inviter_${Date.now()}`,
+      email: `inviter_${Date.now()}@pulse.internal`,
+      referralCode: `INV_${Date.now()}`.slice(0, 10),
+      referredByUserId: null,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(inviterUser, 0.0);
+
+    const initialRateInfo = db.reconcileUserMiningRate(inviterId);
+    assert.strictEqual(initialRateInfo.baseRate, 0.12, 'New account base rate must be 0.12');
+    assert.strictEqual(initialRateInfo.bonusRate, 0.0, 'New account bonus rate must be 0.0');
+    assert.strictEqual(initialRateInfo.totalRate, 0.12, 'New account total rate must be 0.12');
+
+    // 2. Add Referee 1 (Pending -> Activated)
+    const ref1Id = `usr_test_ref1_${Date.now()}`;
+    const ref1User: User = {
+      id: ref1Id,
+      username: `ref1_${Date.now()}`,
+      email: `ref1_${Date.now()}@pulse.internal`,
+      referralCode: `REF1_${Date.now()}`.slice(0, 10),
+      referredByUserId: inviterId,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(ref1User, 0.0);
+    db.createReferral({
+      id: `ref_rec_1_${Date.now()}`,
+      inviterUserId: inviterId,
+      referredUserId: ref1Id,
+      referralCodeUsed: inviterUser.referralCode,
+      status: 'pending',
+      firstMiningCompletedAt: null,
+      rateBonusApplied: 0.01,
+      createdAt: new Date().toISOString(),
+    });
+
+    // While pending, rate must still be 0.12
+    const pendingRate = db.reconcileUserMiningRate(inviterId);
+    assert.strictEqual(pendingRate.totalRate, 0.12, 'Pending referral must not increase rate');
+
+    // Referee 1 completes first mining cycle -> activates referral
+    const mine1 = await processMineRequest(ref1User, '127.0.0.1', 'TestSuite');
+    assert.strictEqual(mine1.data?.referralActivated, true, 'First cycle must activate referral');
+
+    // Inviter rate must now be 0.13 CP/hr
+    const rate1Ref = db.reconcileUserMiningRate(inviterId);
+    assert.strictEqual(rate1Ref.bonusRate, 0.01, '1 active referral must give 0.01 bonus');
+    assert.strictEqual(rate1Ref.totalRate, 0.13, '1 active referral must yield 0.13 total rate');
+
+    // 3. Add Referee 2
+    const ref2Id = `usr_test_ref2_${Date.now()}`;
+    const ref2User: User = {
+      id: ref2Id,
+      username: `ref2_${Date.now()}`,
+      email: `ref2_${Date.now()}@pulse.internal`,
+      referralCode: `REF2_${Date.now()}`.slice(0, 10),
+      referredByUserId: inviterId,
+      role: 'user',
+      status: 'active',
+      baseMiningRate: 0.12,
+      bonusMiningRate: 0.0,
+      totalMiningRate: 0.12,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+    db.createUser(ref2User, 0.0);
+    db.createReferral({
+      id: `ref_rec_2_${Date.now()}`,
+      inviterUserId: inviterId,
+      referredUserId: ref2Id,
+      referralCodeUsed: inviterUser.referralCode,
+      status: 'pending',
+      firstMiningCompletedAt: null,
+      rateBonusApplied: 0.01,
+      createdAt: new Date().toISOString(),
+    });
+
+    // Referee 2 completes first cycle -> activates referral
+    const mine2 = await processMineRequest(ref2User, '127.0.0.1', 'TestSuite');
+    assert.strictEqual(mine2.data?.referralActivated, true, 'Second referee cycle must activate');
+
+    // Inviter rate must now be 0.14 CP/hr
+    const rate2Ref = db.reconcileUserMiningRate(inviterId);
+    assert.strictEqual(rate2Ref.bonusRate, 0.02, '2 active referrals must give 0.02 bonus');
+    assert.strictEqual(rate2Ref.totalRate, 0.14, '2 active referrals must yield 0.14 total rate');
+    assert.strictEqual(rate2Ref.activeReferralCount, 2, 'Must have 2 active referrals');
+
+    // 4. Anti-Abuse: Duplicate referral for the same referee must NOT increase rate
+    db.createReferral({
+      id: `ref_rec_dup_${Date.now()}`,
+      inviterUserId: inviterId,
+      referredUserId: ref2Id, // Same referee!
+      referralCodeUsed: inviterUser.referralCode,
+      status: 'activated',
+      firstMiningCompletedAt: new Date().toISOString(),
+      rateBonusApplied: 0.01,
+      createdAt: new Date().toISOString(),
+    });
+    const rateAfterDup = db.reconcileUserMiningRate(inviterId);
+    assert.strictEqual(rateAfterDup.bonusRate, 0.02, 'Duplicate referral for same user must be deduplicated');
+    assert.strictEqual(rateAfterDup.totalRate, 0.14, 'Rate must remain 0.14 on duplicate attempt');
+
+    // 5. Anti-Abuse: Self-referral must NOT increase rate
+    db.createReferral({
+      id: `ref_rec_self_${Date.now()}`,
+      inviterUserId: inviterId,
+      referredUserId: inviterId, // Self-referral!
+      referralCodeUsed: inviterUser.referralCode,
+      status: 'activated',
+      firstMiningCompletedAt: new Date().toISOString(),
+      rateBonusApplied: 0.01,
+      createdAt: new Date().toISOString(),
+    });
+    const rateAfterSelf = db.reconcileUserMiningRate(inviterId);
+    assert.strictEqual(rateAfterSelf.bonusRate, 0.02, 'Self referral must be excluded from bonus rate');
+    assert.strictEqual(rateAfterSelf.totalRate, 0.14, 'Rate must remain 0.14 on self referral attempt');
+
+    // 6. Token generation encodes authoritative 0.14 rate
+    const token = generateToken(inviterUser);
+    const verifiedToken = verifyToken(token);
+    assert.strictEqual(verifiedToken?.totalMiningRate, 0.14, 'Session token must encode 0.14 rate');
+    assert.strictEqual(verifiedToken?.bonusMiningRate, 0.02, 'Session token must encode 0.02 bonus');
+
+    // 7. Verify Primary Google User (m.shahraiz774@gmail.com / usr_g_b7d1e0d22f16c08b)
+    const primaryUser = db.getUserById('usr_g_b7d1e0d22f16c08b');
+    assert(primaryUser, 'Primary user must exist');
+    const primaryRate = db.reconcileUserMiningRate('usr_g_b7d1e0d22f16c08b');
+    assert.strictEqual(primaryRate.activeReferralCount, 2, 'Primary user must have 2 active referrals');
+    assert.strictEqual(primaryRate.bonusRate, 0.02, 'Primary user bonus rate must be 0.02 CP/hr');
+    assert.strictEqual(primaryRate.totalRate, 0.14, 'Primary user total mining rate must be 0.14 CP/hr');
+
+    const primaryReferrals = db.getReferralsByInviter('usr_g_b7d1e0d22f16c08b');
+    assert.strictEqual(primaryReferrals.length, 2, 'Primary user must have 2 referrals in database');
+    assert(primaryReferrals.every((r) => r.status === 'activated'), 'Both referrals must be activated');
+  });
+
+  // Clean up temporary test artifacts while protecting user accounts and referrals
   db.cleanupTestArtifacts(true);
+
 
   console.log(`\n========================================`);
   console.log(`Test Results: ${passed} Passed, ${failed} Failed`);
