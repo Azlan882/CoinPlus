@@ -70,20 +70,27 @@ export async function processMineRequest(
 
     // Refresh user to get latest rate
     const freshUser = db.getUserById(user.id) || user;
+    const isBtc = freshUser.currency === 'BTC_SIMULATED' || freshUser.totalMiningRate < 0.01;
+    const currency: 'CP' | 'BTC_SIMULATED' = isBtc ? 'BTC_SIMULATED' : 'CP';
     const currentRate = freshUser.totalMiningRate;
     const sessionNumber = miningState.totalCyclesCompleted + 1;
 
     // Credit amount = 1 hour's mining rate
-    const rewardAmount = Number(currentRate.toFixed(6));
+    const rewardAmount = isBtc
+      ? Number(currentRate.toFixed(8))
+      : Number(currentRate.toFixed(6));
     const sessionId = `ses_${Date.now()}_${sessionNumber}_${user.id.slice(-6)}`;
+    const unitLabel = isBtc ? 'simulated BTC' : 'CP';
+    const formattedAmount = isBtc ? rewardAmount.toFixed(8) : rewardAmount.toFixed(4);
 
     // Add balance and audit transaction record
     const { balance } = db.addBalanceTransaction(
       user.id,
       rewardAmount,
       'mining_reward',
-      `Hourly mining cycle #${sessionNumber} completed (+${rewardAmount} CP)`,
-      sessionId
+      `Hourly mining cycle #${sessionNumber} completed (+${formattedAmount} ${unitLabel})`,
+      sessionId,
+      currency
     );
 
     // Record mining session
@@ -95,6 +102,7 @@ export async function processMineRequest(
       cycleEndTime: now + MINING_COOLDOWN_MS,
       minedAmount: rewardAmount,
       miningRateAtSession: currentRate,
+      currency,
       ipAddress,
       userAgent,
       status: 'completed',
@@ -104,7 +112,7 @@ export async function processMineRequest(
 
     // Check referral activation:
     // If this is the referred user's FIRST legitimate completed mining cycle,
-    // activate the referral relationship and permanently increase inviter's rate by 0.01!
+    // activate the referral relationship and permanently increase inviter's rate
     let referralActivated = false;
     if (sessionNumber === 1 && freshUser.referredByUserId) {
       const existingRef = db.getReferralByReferredUser(freshUser.id);
@@ -112,13 +120,23 @@ export async function processMineRequest(
         const activated = db.activateReferral(existingRef.id);
         if (activated) {
           referralActivated = true;
-          // Also reward a first-cycle bonus transaction to inviter
+          // Determine currency of inviter
+          const inviter = db.getUserById(existingRef.inviterUserId);
+          const isInviterBtc = inviter?.currency === 'BTC_SIMULATED' || (inviter?.totalMiningRate !== undefined && inviter.totalMiningRate < 0.01);
+          const inviterCurrency: 'CP' | 'BTC_SIMULATED' = isInviterBtc ? 'BTC_SIMULATED' : 'CP';
+          const milestoneBonus = isInviterBtc ? 0.00005000 : 0.05; // 5,000 sats in BTC or 0.05 in CP
+          const inviterUnitLabel = isInviterBtc ? 'simulated BTC' : 'CP';
+          const formattedBonus = isInviterBtc ? milestoneBonus.toFixed(8) : milestoneBonus.toFixed(2);
+          const boostLabel = isInviterBtc ? '+0.00001000/hr boost' : '+0.01/hr boost';
+
+          // Reward a first-cycle bonus transaction to inviter
           db.addBalanceTransaction(
             existingRef.inviterUserId,
-            0.05,
+            milestoneBonus,
             'referral_bonus',
-            `Referral milestone: ${freshUser.username} completed their 1st mining cycle! (+0.05 CP + 0.01/hr boost)`,
-            existingRef.id
+            `Referral milestone: ${freshUser.username} completed their 1st mining cycle! (+${formattedBonus} ${inviterUnitLabel} ${boostLabel})`,
+            existingRef.id,
+            inviterCurrency
           );
         }
       }
@@ -146,7 +164,7 @@ export async function processMineRequest(
         currentMiningRate: currentRate,
         sessionNumber,
         referralActivated,
-        message: `Successfully mined +${rewardAmount.toFixed(4)} CP! Next session available in 1 hour.`,
+        message: `Successfully mined +${formattedAmount} ${unitLabel}! Next session available in 1 hour.`,
       },
     };
   } finally {

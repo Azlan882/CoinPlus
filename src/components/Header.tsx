@@ -1,6 +1,7 @@
 import React from 'react';
 import { Zap, Shield, LogOut, User as UserIcon, RefreshCw, Key, Smartphone } from 'lucide-react';
 import { User, BalanceState } from '../types.ts';
+import { formatBalance, getCurrencyShortUnit, getCurrencySymbol } from '../utils/format.ts';
 
 interface HeaderProps {
   user: User | null;
@@ -68,9 +69,9 @@ export const Header: React.FC<HeaderProps> = ({
                   Total Balance
                 </span>
                 <div className="flex items-center gap-1 font-mono font-bold text-white text-sm sm:text-base">
-                  <span className="text-cyan-400">⚡</span>
-                  <span>{balance ? balance.balance.toFixed(4) : '0.0000'}</span>
-                  <span className="text-xs font-semibold text-slate-400">CP</span>
+                  <span className="text-cyan-400">{getCurrencySymbol(balance?.currency || user?.currency, balance?.balance)}</span>
+                  <span>{formatBalance(balance?.balance, balance?.currency || user?.currency)}</span>
+                  <span className="text-xs font-semibold text-slate-400">{getCurrencyShortUnit(balance?.currency || user?.currency, balance?.balance)}</span>
                 </div>
               </div>
 

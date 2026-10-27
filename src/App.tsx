@@ -830,6 +830,7 @@ export default function App() {
               currentMiningRate={miningStatus?.totalMiningRate ?? currentUser?.totalMiningRate ?? 0.12}
               baseRate={miningStatus?.baseMiningRate ?? 0.12}
               bonusRate={miningStatus?.bonusMiningRate ?? 0.0}
+              currency={miningStatus?.currency || balance?.currency || currentUser?.currency}
               remainingSeconds={remainingSeconds}
               isMiningLoading={isMiningLoading}
               isSyncing={!hasAuthoritativeMiningState && !syncError && Boolean(currentUser || isMiningSyncing || api.getToken())}
@@ -872,7 +873,7 @@ export default function App() {
                       </div>
                       <h3 className="text-sm font-bold text-white tracking-tight">Pulse Miner</h3>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        Collect energy crystals & earn up to <span className="text-emerald-400 font-semibold font-mono">+100 CP</span> per level!
+                        Collect energy crystals & earn up to <span className="text-emerald-400 font-semibold font-mono">{(miningStatus?.currency || balance?.currency || currentUser?.currency) === 'BTC_SIMULATED' ? '+0.00010000 BTC' : '+100 CP'}</span> per level!
                       </p>
                     </div>
                   </div>

@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx test/mining.test.ts"
+    "test": "tsx test/mining.test.ts && tsx test/btc_simulation.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.2",

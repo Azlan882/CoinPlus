@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { AdminStats, AdminUserItem, SecurityEventItem } from '../types.ts';
 import { api } from '../api.ts';
+import { formatBalance, formatRate, getCurrencyShortUnit, isBtcDenominated } from '../utils/format.ts';
 
 interface AdminPortalProps {
   onClose: () => void;
@@ -216,14 +217,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
                     {u.email} • Code: <span className="text-cyan-400">{u.referralCode}</span>
                   </div>
                   <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                    Rate: {u.totalMiningRate.toFixed(4)} CP/h • Ref: {u.activatedReferrals}/{u.totalReferrals}
+                    Rate: {formatRate(u.totalMiningRate, u.currency)} {getCurrencyShortUnit(u.currency)}/h • Ref: {u.activatedReferrals}/{u.totalReferrals}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 self-end sm:self-center">
                   <div className="text-right mr-2">
-                    <div className="font-mono font-bold text-slate-200">{u.totalBalance.toFixed(4)} CP</div>
-                    <div className="text-[10px] text-slate-500 font-mono">Mined: {u.totalMined.toFixed(4)}</div>
+                    <div className="font-mono font-bold text-slate-200">
+                      {formatBalance(u.totalBalance, u.currency)} {getCurrencyShortUnit(u.currency)}
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-mono">
+                      Mined: {formatBalance(u.totalMined, u.currency)}
+                    </div>
                   </div>
 
                   <button
@@ -320,7 +325,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
             </div>
             <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
               <div className="text-[10px] uppercase font-mono text-slate-400">Total Coins Mined</div>
-              <div className="text-base font-bold text-cyan-400 font-mono mt-0.5">{stats.totalCoinsMined.toFixed(4)} CP</div>
+              <div className="text-base font-bold text-cyan-400 font-mono mt-0.5">{stats.totalCoinsMined.toFixed(4)} Units</div>
             </div>
             <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
               <div className="text-[10px] uppercase font-mono text-slate-400">Total Referral Invites</div>
@@ -346,19 +351,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
               Audited Balance Adjustment: @{adjustingUser.username}
             </h3>
             <p className="text-xs text-slate-400">
-              Current balance: <strong className="text-slate-200 font-mono">{adjustingUser.totalBalance.toFixed(4)} CP</strong>
+              Current balance:{' '}
+              <strong className="text-slate-200 font-mono">
+                {formatBalance(adjustingUser.totalBalance, adjustingUser.currency)} {getCurrencyShortUnit(adjustingUser.currency)}
+              </strong>
             </p>
 
             <form onSubmit={handleAdjustBalance} className="space-y-3">
               <div>
                 <label className="text-[11px] uppercase font-mono text-slate-400 block mb-1">
-                  Delta Amount (e.g. +1.5 or -0.5)
+                  Delta Amount in {getCurrencyShortUnit(adjustingUser.currency)} ({isBtcDenominated(adjustingUser.currency) ? 'e.g. +0.00012000' : 'e.g. +1.5'})
                 </label>
                 <input
                   type="number"
-                  step="0.0001"
+                  step={isBtcDenominated(adjustingUser.currency) ? '0.00000001' : '0.0001'}
                   required
-                  placeholder="0.0000"
+                  placeholder={isBtcDenominated(adjustingUser.currency) ? '0.00000000' : '0.0000'}
                   value={adjustAmount}
                   onChange={(e) => setAdjustAmount(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 font-mono focus:outline-none focus:border-cyan-500"

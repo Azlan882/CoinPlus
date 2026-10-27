@@ -43,6 +43,10 @@ export const ReferralsView: React.FC<ReferralsViewProps> = ({ data, isLoading, o
     }
   };
 
+  const isBtc = (data?.baseBonusPerReferral ?? 0.01) < 0.001;
+  const boostUnit = isBtc ? 'BTC' : 'CP';
+  const boostRateText = isBtc ? '+0.00001000 BTC/h' : '+0.01 CP/h';
+
   return (
     <div className="w-full max-w-xl mx-auto px-4 py-4 space-y-4">
       {/* Banner / Header */}
@@ -54,7 +58,7 @@ export const ReferralsView: React.FC<ReferralsViewProps> = ({ data, isLoading, o
           <div>
             <h2 className="text-base sm:text-lg font-bold text-white">Referral Team Network</h2>
             <p className="text-xs text-slate-400">
-              Invite friends to boost your mining rate permanently by <strong className="text-emerald-400">+0.01 CP/h</strong> each.
+              Invite friends to boost your mining rate permanently by <strong className="text-emerald-400">{boostRateText}</strong> each.
             </p>
           </div>
         </div>
@@ -76,7 +80,7 @@ export const ReferralsView: React.FC<ReferralsViewProps> = ({ data, isLoading, o
           <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/60">
             <div className="text-[10px] font-mono uppercase text-cyan-400">Rate Boost</div>
             <div className="text-base sm:text-lg font-mono font-bold text-cyan-400">
-              +{data ? data.activeBonusRate.toFixed(2) : '0.00'} <span className="text-[10px]">/h</span>
+              +{data ? (isBtc ? data.activeBonusRate.toFixed(8) : data.activeBonusRate.toFixed(2)) : (isBtc ? '0.00000000' : '0.00')} <span className="text-[10px]">{boostUnit}/h</span>
             </div>
           </div>
         </div>
@@ -139,7 +143,7 @@ export const ReferralsView: React.FC<ReferralsViewProps> = ({ data, isLoading, o
         <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-900/40 text-xs text-amber-200/90 flex items-start gap-2.5">
           <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
           <div className="leading-relaxed">
-            <strong className="text-amber-300 font-semibold">Anti-Abuse Rule:</strong> Referral invitations stay in <span className="underline font-semibold">Pending</span> state until the invited person completes their <strong>first full 1-hour mining cycle</strong>. Once verified, your rate bonus permanently increases by +0.01 CP/h!
+            <strong className="text-amber-300 font-semibold">Anti-Abuse Rule:</strong> Referral invitations stay in <span className="underline font-semibold">Pending</span> state until the invited person completes their <strong>first full 1-hour mining cycle</strong>. Once verified, your rate bonus permanently increases by {boostRateText}!
           </div>
         </div>
       </div>
@@ -205,7 +209,7 @@ export const ReferralsView: React.FC<ReferralsViewProps> = ({ data, isLoading, o
                   {item.status === 'activated' ? (
                     <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/80 border border-emerald-800/70 text-[11px] font-mono text-emerald-300 font-medium">
                       <UserCheck className="w-3 h-3 text-emerald-400" />
-                      <span>+0.01 CP/h Active</span>
+                      <span>{boostRateText} Active</span>
                     </div>
                   ) : (
                     <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-950/70 border border-amber-800/70 text-[11px] font-mono text-amber-300 font-medium">

@@ -3,6 +3,7 @@ import { Zap, Clock, TrendingUp, CheckCircle2, ShieldCheck, Flame, AlertTriangle
 import confetti from 'canvas-confetti';
 import { MiningCycleStatus } from '../types.ts';
 import { sounds } from '../utils/audio.ts';
+import { formatRate, formatBalance, getCurrencyShortUnit } from '../utils/format.ts';
 
 interface MiningCircleProps {
   status: MiningCycleStatus;
@@ -20,6 +21,7 @@ interface MiningCircleProps {
   cycleStartTime?: number | null;
   serverClockOffsetMs?: number;
   resumeSyncTick?: number;
+  currency?: 'CP' | 'BTC_SIMULATED';
 }
 
 export const MiningCircle: React.FC<MiningCircleProps> = ({
@@ -37,6 +39,7 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
   cycleStartTime = null,
   serverClockOffsetMs = 0,
   resumeSyncTick = 0,
+  currency,
 }) => {
   // Pure display tick counter so the component re-renders smoothly from authoritative timestamps
   const [, setDisplayTick] = useState<number>(0);
@@ -308,7 +311,7 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
                   {formattedCountdown}
                 </span>
                 <span className="text-[11px] text-emerald-300/80 font-mono">
-                  +{accumulatedEarned.toFixed(4)} CP
+                  +{formatBalance(accumulatedEarned, currency)} {getCurrencyShortUnit(currency, currentMiningRate)}
                 </span>
               </div>
             ) : status === 'available' ? (
@@ -317,7 +320,7 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
                 <span className="text-base sm:text-lg font-extrabold text-amber-200 uppercase mt-0.5">
                   CLAIM &amp; MINE
                 </span>
-                <span className="text-[11px] text-emerald-400 font-medium">+{currentMiningRate.toFixed(4)} CP reward</span>
+                <span className="text-[11px] text-emerald-400 font-medium">+{formatRate(currentMiningRate, currency)} {getCurrencyShortUnit(currency, currentMiningRate)} reward</span>
               </div>
             ) : (
               <div className="flex flex-col items-center">
@@ -330,7 +333,7 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
           {/* Rate sub-badge */}
           <div className="mt-2 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-900/90 border border-slate-800 text-[11px] font-mono text-cyan-300">
             <TrendingUp className="w-3 h-3 text-cyan-400" />
-            <span>+{currentMiningRate.toFixed(4)} CP/h</span>
+            <span>+{formatRate(currentMiningRate, currency)} {getCurrencyShortUnit(currency, currentMiningRate)}/h</span>
           </div>
         </button>
       </div>
@@ -344,6 +347,17 @@ export const MiningCircle: React.FC<MiningCircleProps> = ({
         <div className="flex items-center gap-1.5">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
           <span>Server Cooldown: <strong className="text-emerald-300">Enforced</strong></span>
+        </div>
+      </div>
+
+      {/* Prominent Simulation Disclaimer */}
+      <div className="mt-3 w-full p-3 rounded-xl bg-slate-900/80 border border-amber-500/30 text-amber-200/90 text-[11px] leading-relaxed shadow-lg">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold text-amber-300 block mb-0.5">Simulation Game Notice:</span>
+            <span>This is a simulation game for entertainment only. No real cryptocurrency is mined, owned, earned, or paid out. All displayed BTC amounts and balances are fictional, have no monetary value, and cannot be withdrawn, exchanged, or converted into cryptocurrency or cash.</span>
+          </div>
         </div>
       </div>
 

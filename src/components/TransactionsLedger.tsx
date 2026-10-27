@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, ShieldAlert, Zap, Users, Sliders, RefreshCw, FileText } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, Zap, Users, Sliders, RefreshCw, FileText, Award } from 'lucide-react';
 import { TransactionItem } from '../types.ts';
 import { api } from '../api.ts';
+import { formatBalance, getCurrencyShortUnit } from '../utils/format.ts';
 
 interface TransactionsLedgerProps {
   onRefreshBalance: () => void;
@@ -16,6 +17,7 @@ export const TransactionsLedger: React.FC<TransactionsLedgerProps> = ({ onRefres
     recordedBalance: number;
     ledgerReconciledBalance: number;
     transactionCount: number;
+    currency?: 'CP' | 'BTC_SIMULATED';
     timestamp: string;
   } | null>(null);
 
@@ -94,11 +96,15 @@ export const TransactionsLedger: React.FC<TransactionsLedgerProps> = ({ onRefres
           <div className="mt-4 p-3 rounded-xl bg-slate-950/80 border border-slate-800/80 text-xs font-mono space-y-1.5">
             <div className="flex justify-between text-slate-400">
               <span>Ledger Reconciled Balance:</span>
-              <span className="text-slate-200 font-bold">+{auditResult.ledgerReconciledBalance.toFixed(6)} CP</span>
+              <span className="text-slate-200 font-bold">
+                +{formatBalance(auditResult.ledgerReconciledBalance, auditResult.currency)} {getCurrencyShortUnit(auditResult.currency)}
+              </span>
             </div>
             <div className="flex justify-between text-slate-400">
               <span>Account Recorded Balance:</span>
-              <span className="text-emerald-400 font-bold">+{auditResult.recordedBalance.toFixed(6)} CP</span>
+              <span className="text-emerald-400 font-bold">
+                +{formatBalance(auditResult.recordedBalance, auditResult.currency)} {getCurrencyShortUnit(auditResult.currency)}
+              </span>
             </div>
             <div className="flex justify-between text-slate-400">
               <span>SHA-256 Checksum Status:</span>
@@ -128,48 +134,57 @@ export const TransactionsLedger: React.FC<TransactionsLedgerProps> = ({ onRefres
           </div>
         ) : (
           <div className="space-y-2">
-            {transactions.map((tx) => (
-              <div
-                key={tx.id}
-                className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 flex items-center justify-between text-xs gap-3"
-              >
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className={`p-2 rounded-lg shrink-0 ${
-                      tx.type === 'mining_reward'
-                        ? 'bg-cyan-950/80 text-cyan-400 border border-cyan-800/50'
-                        : tx.type === 'referral_bonus'
-                        ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/50'
-                        : 'bg-amber-950/80 text-amber-400 border border-amber-800/50'
-                    }`}
-                  >
-                    {tx.type === 'mining_reward' && <Zap className="w-4 h-4" />}
-                    {tx.type === 'referral_bonus' && <Users className="w-4 h-4" />}
-                    {tx.type === 'admin_adjustment' && <Sliders className="w-4 h-4" />}
+            {transactions.map((tx) => {
+              const txUnit = getCurrencyShortUnit(tx.currency);
+              return (
+                <div
+                  key={tx.id}
+                  className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 flex items-center justify-between text-xs gap-3"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className={`p-2 rounded-lg shrink-0 ${
+                        tx.type === 'mining_reward'
+                          ? 'bg-cyan-950/80 text-cyan-400 border border-cyan-800/50'
+                          : tx.type === 'referral_bonus'
+                          ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/50'
+                          : tx.type === 'pulse_miner_reward' || tx.type === 'game_reward'
+                          ? 'bg-purple-950/80 text-purple-400 border border-purple-800/50'
+                          : tx.type === 'migration_conversion'
+                          ? 'bg-sky-950/80 text-sky-400 border border-sky-800/50'
+                          : 'bg-amber-950/80 text-amber-400 border border-amber-800/50'
+                      }`}
+                    >
+                      {tx.type === 'mining_reward' && <Zap className="w-4 h-4" />}
+                      {tx.type === 'referral_bonus' && <Users className="w-4 h-4" />}
+                      {(tx.type === 'pulse_miner_reward' || tx.type === 'game_reward') && <Award className="w-4 h-4" />}
+                      {tx.type === 'migration_conversion' && <RefreshCw className="w-4 h-4" />}
+                      {tx.type === 'admin_adjustment' && <Sliders className="w-4 h-4" />}
+                    </div>
+
+                    <div>
+                      <div className="font-semibold text-slate-200">{tx.description}</div>
+                      <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                        {new Date(tx.timestamp).toLocaleString()} • Before: {formatBalance(tx.balanceBefore, tx.currency)} {txUnit}
+                      </div>
+                    </div>
                   </div>
 
-                  <div>
-                    <div className="font-semibold text-slate-200">{tx.description}</div>
-                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                      {new Date(tx.timestamp).toLocaleString()} • Before: {tx.balanceBefore.toFixed(4)} CP
+                  <div className="text-right shrink-0">
+                    <div
+                      className={`font-mono font-bold text-sm ${
+                        tx.amount >= 0 ? 'text-emerald-400' : 'text-red-400'
+                      }`}
+                    >
+                      {tx.amount >= 0 ? `+${formatBalance(tx.amount, tx.currency)}` : formatBalance(tx.amount, tx.currency)}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                      {txUnit}
                     </div>
                   </div>
                 </div>
-
-                <div className="text-right shrink-0">
-                  <div
-                    className={`font-mono font-bold text-sm ${
-                      tx.amount >= 0 ? 'text-emerald-400' : 'text-red-400'
-                    }`}
-                  >
-                    {tx.amount >= 0 ? `+${tx.amount.toFixed(4)}` : tx.amount.toFixed(4)}
-                  </div>
-                  <div className="text-[10px] font-mono text-slate-400 mt-0.5">
-                    CP
-                  </div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

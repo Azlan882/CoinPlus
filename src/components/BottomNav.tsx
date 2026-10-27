@@ -98,7 +98,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
           <span className="text-[10px] font-mono tracking-tight">Ledger</span>
         </button>
 
-        {/* Blockchain Blueprint Tab */}
+        {/* About / Simulation Blueprint Tab */}
         <button
           onClick={() => onSelectTab('roadmap')}
           className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
@@ -114,7 +114,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
           >
             <Layers className="w-5 h-5" />
           </div>
-          <span className="text-[10px] font-mono tracking-tight">Roadmap</span>
+          <span className="text-[10px] font-mono tracking-tight">About</span>
         </button>
 
         {/* Admin Tab (only if user role is admin) */}

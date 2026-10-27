@@ -13,9 +13,12 @@ export interface User {
   referredByUserId: string | null;
   role: UserRole;
   status: UserStatus;
-  baseMiningRate: number; // default 0.12 coins/hour
-  bonusMiningRate: number; // 0.01 * number of activated referrals
+  currency?: 'CP' | 'BTC_SIMULATED'; // Currency denomination
+  baseMiningRate: number; // default 0.12 CP/hr or 0.00012000 BTC/hr
+  bonusMiningRate: number; // 0.01 CP/hr or 0.00001000 BTC/hr per activated referral
   totalMiningRate: number; // base + bonus
+  legacyCpBalance?: number; // Preserved original CP balance if migrated
+  migratedToSimulatedBtcAt?: string; // Timestamp of protocol conversion
   createdAt: string;
   lastLoginAt: string;
   lastActiveAt: string;
@@ -32,6 +35,7 @@ export interface MiningSession {
   cycleEndTime: number; // Unix ms
   minedAmount: number;
   miningRateAtSession: number;
+  currency?: 'CP' | 'BTC_SIMULATED';
   ipAddress: string;
   userAgent: string;
   status: MiningSessionStatus;
@@ -52,6 +56,9 @@ export interface BalanceRecord {
   totalBalance: number;
   totalMined: number;
   totalReferralBonus: number;
+  satoshis?: number; // Integer satoshis for simulated BTC
+  legacyCpBalance?: number; // Preserved legacy CP balance
+  currency?: 'CP' | 'BTC_SIMULATED';
   lastCalculatedAt: string;
   integrityChecksum: string; // SHA-256 checksum of userId + totalBalance
 }
@@ -65,7 +72,7 @@ export interface ReferralRecord {
   referralCodeUsed: string;
   status: ReferralStatus;
   firstMiningCompletedAt: string | null;
-  rateBonusApplied: number; // 0.01
+  rateBonusApplied: number; // 0.01 CP or 0.00001000 BTC
   createdAt: string;
 }
 
@@ -74,12 +81,18 @@ export interface MiningRateHistory {
   userId: string;
   oldRate: number;
   newRate: number;
-  changeReason: 'initial_base' | 'referral_activated' | 'admin_adjustment';
+  currency?: 'CP' | 'BTC_SIMULATED';
+  changeReason: 'initial_base' | 'referral_activated' | 'admin_adjustment' | 'protocol_migration';
   triggeredByUserId?: string;
   timestamp: string;
 }
 
-export type TransactionType = 'mining_reward' | 'referral_bonus' | 'admin_adjustment' | 'game_reward';
+export type TransactionType =
+  | 'mining_reward'
+  | 'referral_bonus'
+  | 'admin_adjustment'
+  | 'game_reward'
+  | 'migration_conversion';
 
 export interface PulseMinerClaimRecord {
   id: string; // idempotent claim ID (e.g. claim_${userId}_lvl${levelId}_${timestamp})
@@ -88,6 +101,7 @@ export interface PulseMinerClaimRecord {
   score: number;
   rewardPoints: number;
   durationSeconds: number;
+  currency?: 'CP' | 'BTC_SIMULATED';
   timestamp: string;
 }
 
@@ -96,19 +110,21 @@ export interface PulseMinerUserState {
   highestUnlockedLevel: number;
   completedLevels: number[];
   highScores: Record<number, number>; // levelId -> max score
-  claimedLevelRewards: Record<number, { claimedAt: string; rewardPoints: number; claimId: string }>;
+  claimedLevelRewards: Record<number, { claimedAt: string; rewardPoints: number; claimId: string; currency?: string }>;
   totalGamePointsEarned: number;
   lastPlayedAt: string;
 }
-
 
 export interface TransactionRecord {
   id: string;
   userId: string;
   type: TransactionType;
   amount: number;
+  currency?: 'CP' | 'BTC_SIMULATED';
+  satoshis?: number;
   balanceBefore: number;
   balanceAfter: number;
+  legacyCpBalance?: number;
   referenceId?: string;
   description: string;
   timestamp: string;

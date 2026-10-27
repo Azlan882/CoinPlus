@@ -19,7 +19,7 @@ import {
 } from './types.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'coinpulse_database.json');
+const DB_FILE = path.join(DATA_DIR, process.env.COINPULSE_DB_FILE || 'coinpulse_database.json');
 
 const INITIAL_DB: DatabaseSchema = {
   version: 1,
@@ -119,14 +119,16 @@ class Database {
     }
   }
 
-  private calculateChecksum(userId: string, balance: number): string {
+  calculateChecksum(userId: string, balance: number, currency?: string): string {
+    const isBtc = currency === 'BTC_SIMULATED' || balance < 0.01;
+    const formatted = isBtc ? balance.toFixed(8) : balance.toFixed(6);
     return crypto
       .createHash('sha256')
-      .update(`${userId}:${balance.toFixed(6)}:${process.env.AUTH_SECRET || 'coinpulse_secret_key'}`)
+      .update(`${userId}:${formatted}:${process.env.AUTH_SECRET || 'coinpulse_secret_key'}`)
       .digest('hex');
   }
 
-  private seedAdminIfNeeded(): void {
+  public seedAdminIfNeeded(): void {
     const adminUser = Object.values(this.data.users).find(
       (u) => u.username === 'admin' || u.role === 'admin'
     );
@@ -319,14 +321,18 @@ class Database {
       const pId = existingPrimary.id;
       const pBal = this.getBalance(pId);
       const pState = this.getMiningState(pId);
-      if (pState.totalCyclesCompleted < 3 || pBal.totalBalance < 0.36) {
+      const isBtcMode = pBal?.currency === 'BTC_SIMULATED' || existingPrimary?.currency === 'BTC_SIMULATED' || pBal?.legacyCpBalance !== undefined;
+      const minCycleBalance = isBtcMode ? 0.00036000 : 0.36;
+      const shouldEnsureMinimum = !isBtcMode && (pState.totalCyclesCompleted < 3 || pBal.totalBalance < minCycleBalance);
+
+      if (shouldEnsureMinimum) {
         this.data.balances[pId] = {
           userId: pId,
-          totalBalance: Math.max(pBal.totalBalance, 0.36),
-          totalMined: Math.max(pBal.totalMined, 0.36),
+          totalBalance: Math.max(pBal.totalBalance, minCycleBalance),
+          totalMined: Math.max(pBal.totalMined, minCycleBalance),
           totalReferralBonus: pBal.totalReferralBonus,
           lastCalculatedAt: nowIso,
-          integrityChecksum: this.calculateChecksum(pId, Math.max(pBal.totalBalance, 0.36)),
+          integrityChecksum: this.calculateChecksum(pId, Math.max(pBal.totalBalance, minCycleBalance), pBal.currency),
         };
         this.data.miningStates[pId] = {
           userId: pId,
@@ -633,9 +639,13 @@ class Database {
     totalRate: number;
     activeReferralCount: number;
     totalReferralCount: number;
+    currency: 'CP' | 'BTC_SIMULATED';
   } {
     const user = this.data.users[userId];
-    const baseRate = user?.baseMiningRate ?? 0.12;
+    const isBtc = user?.currency === 'BTC_SIMULATED' || (user?.baseMiningRate !== undefined && user.baseMiningRate <= 0.001);
+    const currency = isBtc ? 'BTC_SIMULATED' : 'CP';
+    const defaultBase = isBtc ? 0.00012000 : 0.12;
+    const baseRate = user?.baseMiningRate ?? defaultBase;
 
     const userReferrals = this.data.referrals.filter(
       (r) => r.inviterUserId === userId && r.referredUserId && r.referredUserId !== userId
@@ -652,8 +662,16 @@ class Database {
     }
 
     const activeReferralCount = validActivatedByReferee.size;
-    const bonusRate = Number((activeReferralCount * 0.01).toFixed(4));
-    const totalRate = Number((baseRate + bonusRate).toFixed(4));
+    // Base simulation rate: 12,000 satoshis/hour (0.00012000 BTC/h)
+    // Referral boost: 1,000 satoshis/hour (0.00001000 BTC/h) per valid referral
+    // Legacy CP rate: 0.12 base + 0.01 per referral
+    const bonusMultiplier = isBtc ? 0.00001000 : 0.01;
+    const bonusRate = isBtc
+      ? Number((activeReferralCount * bonusMultiplier).toFixed(8))
+      : Number((activeReferralCount * bonusMultiplier).toFixed(4));
+    const totalRate = isBtc
+      ? Number((baseRate + bonusRate).toFixed(8))
+      : Number((baseRate + bonusRate).toFixed(4));
 
     if (user) {
       let needsSave = false;
@@ -673,6 +691,7 @@ class Database {
       totalRate,
       activeReferralCount,
       totalReferralCount: userReferrals.length,
+      currency,
     };
   }
 
@@ -732,13 +751,18 @@ class Database {
   ): { user: User; balance: BalanceRecord; miningState: UserMiningState } {
     this.data.users[user.id] = user;
 
+    const isBtc = user.currency === 'BTC_SIMULATED' || (user.baseMiningRate !== undefined && user.baseMiningRate < 0.001);
+    const currency: 'CP' | 'BTC_SIMULATED' = isBtc ? 'BTC_SIMULATED' : 'CP';
+
     const balance: BalanceRecord = {
       userId: user.id,
       totalBalance: initialBalance,
       totalMined: 0.0,
       totalReferralBonus: 0.0,
+      currency,
+      satoshis: isBtc ? Math.round(Number((initialBalance * 100_000_000).toFixed(0))) : undefined,
       lastCalculatedAt: new Date().toISOString(),
-      integrityChecksum: this.calculateChecksum(user.id, initialBalance),
+      integrityChecksum: this.calculateChecksum(user.id, initialBalance, currency),
     };
     this.data.balances[user.id] = balance;
 
@@ -906,20 +930,35 @@ class Database {
     return this.data.balances[userId];
   }
 
-  verifyBalanceIntegrity(userId: string): { isValid: boolean; expected: number; recorded: number } {
+  verifyBalanceIntegrity(userId: string): { isValid: boolean; expected: number; recorded: number; currency: 'CP' | 'BTC_SIMULATED' } {
     const balance = this.getBalance(userId);
-    // Sum all transactions from ledger
-    const txs = this.data.transactions.filter((tx) => tx.userId === userId);
-    const ledgerSum = txs.reduce((acc, tx) => acc + tx.amount, 0);
+    const user = this.data.users[userId];
+    const isBtc = balance.currency === 'BTC_SIMULATED' || user?.currency === 'BTC_SIMULATED' || (balance.totalBalance < 0.01 && balance.totalBalance > 0);
+    const currency: 'CP' | 'BTC_SIMULATED' = isBtc ? 'BTC_SIMULATED' : 'CP';
 
-    const isSumValid = Math.abs(ledgerSum - balance.totalBalance) < 0.000001;
-    const checksum = this.calculateChecksum(userId, balance.totalBalance);
+    // Denomination-aware reconciliation:
+    // If user is in BTC_SIMULATED mode, sum only BTC-denominated transactions and migration entries.
+    // Never sum legacy CP transactions directly against BTC!
+    const txs = this.data.transactions.filter((tx) => tx.userId === userId);
+    let ledgerSum = 0;
+    if (isBtc) {
+      const btcTxs = txs.filter((tx) => tx.currency === 'BTC_SIMULATED' || tx.type === 'migration_conversion');
+      ledgerSum = btcTxs.reduce((acc, tx) => acc + tx.amount, 0);
+    } else {
+      const cpTxs = txs.filter((tx) => tx.currency !== 'BTC_SIMULATED');
+      ledgerSum = cpTxs.reduce((acc, tx) => acc + tx.amount, 0);
+    }
+
+    const tolerance = isBtc ? 0.00000001 : 0.000001;
+    const isSumValid = Math.abs(ledgerSum - balance.totalBalance) < tolerance;
+    const checksum = this.calculateChecksum(userId, balance.totalBalance, currency);
     const isChecksumValid = checksum === balance.integrityChecksum;
 
     return {
       isValid: isSumValid && isChecksumValid,
-      expected: Number(ledgerSum.toFixed(6)),
-      recorded: Number(balance.totalBalance.toFixed(6)),
+      expected: isBtc ? Number(ledgerSum.toFixed(8)) : Number(ledgerSum.toFixed(6)),
+      recorded: isBtc ? Number(balance.totalBalance.toFixed(8)) : Number(balance.totalBalance.toFixed(6)),
+      currency,
     };
   }
 
@@ -928,35 +967,59 @@ class Database {
     amount: number,
     type: TransactionType,
     description: string,
-    referenceId?: string
+    referenceId?: string,
+    transactionCurrency?: 'CP' | 'BTC_SIMULATED'
   ): { balance: BalanceRecord; transaction: TransactionRecord } {
     const current = this.getBalance(userId);
+    const user = this.data.users[userId];
+    const isBtc =
+      transactionCurrency === 'BTC_SIMULATED' ||
+      current.currency === 'BTC_SIMULATED' ||
+      user?.currency === 'BTC_SIMULATED' ||
+      (amount < 0.01 && current.totalBalance < 0.01);
+    const currency: 'CP' | 'BTC_SIMULATED' = isBtc ? 'BTC_SIMULATED' : 'CP';
+
     const balanceBefore = current.totalBalance;
-    const balanceAfter = Number((balanceBefore + amount).toFixed(6));
+    const balanceAfter = isBtc
+      ? Number((balanceBefore + amount).toFixed(8))
+      : Number((balanceBefore + amount).toFixed(6));
 
     let totalMined = current.totalMined;
     let totalReferralBonus = current.totalReferralBonus;
 
     if (type === 'mining_reward') {
-      totalMined = Number((totalMined + amount).toFixed(6));
+      totalMined = isBtc
+        ? Number((totalMined + amount).toFixed(8))
+        : Number((totalMined + amount).toFixed(6));
     } else if (type === 'referral_bonus') {
-      totalReferralBonus = Number((totalReferralBonus + amount).toFixed(6));
+      totalReferralBonus = isBtc
+        ? Number((totalReferralBonus + amount).toFixed(8))
+        : Number((totalReferralBonus + amount).toFixed(6));
     }
+
+    const satoshis = isBtc
+      ? Math.round(Number((balanceAfter * 100_000_000).toFixed(0)))
+      : undefined;
 
     const updatedBalance: BalanceRecord = {
       userId,
       totalBalance: balanceAfter,
       totalMined,
       totalReferralBonus,
+      satoshis,
+      currency,
+      legacyCpBalance: current.legacyCpBalance,
       lastCalculatedAt: new Date().toISOString(),
-      integrityChecksum: this.calculateChecksum(userId, balanceAfter),
+      integrityChecksum: this.calculateChecksum(userId, balanceAfter, currency),
     };
 
     const transaction: TransactionRecord = {
       id: `tx_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       userId,
       type,
-      amount: Number(amount.toFixed(6)),
+      currency,
+      satoshis: isBtc ? Math.round(Number((amount * 100_000_000).toFixed(0))) : undefined,
+      amount: isBtc ? Number(amount.toFixed(8)) : Number(amount.toFixed(6)),
       balanceBefore,
       balanceAfter,
       referenceId,
@@ -1307,10 +1370,14 @@ class Database {
 
     // 4. Check if level completion reward was already claimed for this level
     const isFirstTimeCompletion = !state.claimedLevelRewards[levelId];
+    const isBtc = user.currency === 'BTC_SIMULATED' || currentBalance.currency === 'BTC_SIMULATED';
+    const currency: 'CP' | 'BTC_SIMULATED' = isBtc ? 'BTC_SIMULATED' : 'CP';
 
-    // Reward scale as per specifications:
-    // Level 1: 10, Level 2: 15, Level 3: 20, Level 4: 25, Level 5: 30, Level 6: 40, Level 7: 50, Level 8: 60, Level 9: 75, Level 10: 100
-    const LEVEL_REWARDS: Record<number, number> = {
+    // Reward scale:
+    // In legacy CP: 10, 15, 20... 100 CP
+    // In simulated BTC: 1,000 sats per tier:
+    // Level 1: 0.00001000 BTC (1,000 sats), Level 2: 0.00001500 BTC (1,500 sats), up to Level 10: 0.00010000 BTC (10,000 sats)
+    const LEVEL_REWARDS_CP: Record<number, number> = {
       1: 10,
       2: 15,
       3: 20,
@@ -1322,10 +1389,24 @@ class Database {
       9: 75,
       10: 100,
     };
+    const LEVEL_REWARDS_BTC: Record<number, number> = {
+      1: 0.00001000,
+      2: 0.00001500,
+      3: 0.00002000,
+      4: 0.00002500,
+      5: 0.00003000,
+      6: 0.00004000,
+      7: 0.00005000,
+      8: 0.00006000,
+      9: 0.00007500,
+      10: 0.00010000,
+    };
 
     let rewardPoints = 0;
     if (isFirstTimeCompletion) {
-      rewardPoints = LEVEL_REWARDS[levelId] || 10;
+      rewardPoints = isBtc
+        ? (LEVEL_REWARDS_BTC[levelId] || 0.00001000)
+        : (LEVEL_REWARDS_CP[levelId] || 10);
     }
 
     // 5. Update user game state
@@ -1344,16 +1425,22 @@ class Database {
         claimedAt: new Date().toISOString(),
         rewardPoints,
         claimId,
+        currency,
       };
-      state.totalGamePointsEarned = Number((state.totalGamePointsEarned + rewardPoints).toFixed(6));
+      state.totalGamePointsEarned = isBtc
+        ? Number((state.totalGamePointsEarned + rewardPoints).toFixed(8))
+        : Number((state.totalGamePointsEarned + rewardPoints).toFixed(6));
 
       // 6. Credit authoritative ledger and balance
+      const unitLabel = isBtc ? 'simulated BTC' : 'CP';
+      const formattedReward = isBtc ? rewardPoints.toFixed(8) : rewardPoints.toString();
       const res = this.addBalanceTransaction(
         userId,
         rewardPoints,
         'game_reward',
-        `Pulse Miner: Level ${levelId} Completion Reward (+${rewardPoints} CP)`,
-        claimId
+        `Pulse Miner: Level ${levelId} Completion Reward (+${formattedReward} ${unitLabel})`,
+        claimId,
+        currency
       );
       updatedBalance = res.balance;
 
@@ -1364,6 +1451,7 @@ class Database {
         score,
         rewardPoints,
         durationSeconds,
+        currency,
         timestamp: new Date().toISOString(),
       });
     }
@@ -1378,7 +1466,7 @@ class Database {
       isDuplicateClaim: false,
       message:
         rewardPoints > 0
-          ? `Successfully credited +${rewardPoints} CP for completing Level ${levelId}!`
+          ? `Successfully credited +${isBtc ? rewardPoints.toFixed(8) : rewardPoints} ${isBtc ? 'simulated BTC' : 'CP'} for completing Level ${levelId}!`
           : `Level ${levelId} replay completed! High score updated.`,
     };
   }

@@ -33,21 +33,14 @@ if string.match(ngx.var.uri, "^/api/") or string.match(ngx.var.uri, "^/auth/call
   return
 end`;
 
-      const startAnchor = 'if ngx.var.host == "localhost" then\n  return\nend';
-      const endAnchor = '-- Block potentially malicious return_url values.';
-      const targetSegment = `${startAnchor}\n\n${updatedBypass}\n\n${endAnchor}`;
-
-      const startIdx = luaContent.indexOf(startAnchor);
-      const endIdx = luaContent.indexOf(endAnchor);
-      if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-        const currentSegment = luaContent.slice(startIdx, endIdx + endAnchor.length);
-        if (currentSegment !== targetSegment) {
-          luaContent =
-            luaContent.slice(0, startIdx) +
-            targetSegment +
-            luaContent.slice(endIdx + endAnchor.length);
+      if (!luaContent.includes('string.match(ngx.var.uri, "^/auth/callback")')) {
+        const localhostRegex = /(if\s+ngx\.var\.host\s*==\s*"localhost"[\s\S]*?then\s+return\s+end)/;
+        if (localhostRegex.test(luaContent)) {
+          luaContent = luaContent.replace(localhostRegex, `$1\n\n${updatedBypass}`);
           fs.writeFileSync(luaPath, luaContent, 'utf8');
           changed = true;
+        } else {
+          console.warn('[setup-nginx] Could not locate localhost check in lua script');
         }
       }
     }

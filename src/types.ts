@@ -47,6 +47,8 @@ export interface ClaimRewardResponse {
     totalBalance: number;
     totalMined: number;
     totalReferralBonus: number;
+    currency?: 'CP' | 'BTC_SIMULATED';
+    satoshis?: number;
     lastCalculatedAt: string;
   };
   state: PulseMinerUserState;
@@ -66,9 +68,12 @@ export interface User {
   referredByUserId: string | null;
   role: 'user' | 'admin';
   status: 'active' | 'suspended';
+  currency?: 'CP' | 'BTC_SIMULATED';
   baseMiningRate: number;
   bonusMiningRate: number;
   totalMiningRate: number;
+  legacyCpBalance?: number;
+  migratedToSimulatedBtcAt?: string;
   createdAt: string;
   lastLoginAt: string;
   lastActiveAt: string;
@@ -78,6 +83,9 @@ export interface BalanceState {
   balance: number;
   totalMined: number;
   totalReferralBonus: number;
+  satoshis?: number;
+  legacyCpBalance?: number;
+  currency?: 'CP' | 'BTC_SIMULATED';
   lastCalculatedAt: string;
   integrityVerified: boolean;
 }
@@ -93,6 +101,7 @@ export interface MiningStatusResponse {
   currentCycleStartTime: number | null;
   lastMinedAt: number | null;
   totalCyclesCompleted: number;
+  currency?: 'CP' | 'BTC_SIMULATED';
   baseMiningRate: number;
   bonusMiningRate: number;
   totalMiningRate: number;
@@ -126,10 +135,13 @@ export interface ReferralsResponse {
 export interface TransactionItem {
   id: string;
   userId: string;
-  type: 'mining_reward' | 'referral_bonus' | 'admin_adjustment';
+  type: 'mining_reward' | 'referral_bonus' | 'admin_adjustment' | 'game_reward' | 'pulse_miner_reward' | 'migration_conversion';
   amount: number;
+  currency?: 'CP' | 'BTC_SIMULATED';
+  satoshis?: number;
   balanceBefore: number;
   balanceAfter: number;
+  legacyCpBalance?: number;
   referenceId?: string;
   description: string;
   timestamp: string;
@@ -151,6 +163,8 @@ export interface AdminUserItem {
   email: string;
   role: 'user' | 'admin';
   status: 'active' | 'suspended';
+  currency?: 'CP' | 'BTC_SIMULATED';
+  satoshis?: number;
   totalBalance: number;
   totalMined: number;
   totalMiningRate: number;

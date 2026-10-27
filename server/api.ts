@@ -85,6 +85,7 @@ function buildAuthoritativeMiningStatus(user: User) {
     bonusMiningRate: rateInfo.bonusRate,
     totalMiningRate: rateInfo.totalRate,
     activeReferralsCount: rateInfo.activeReferralCount,
+    currency: rateInfo.currency,
     stateCheckpoint,
     serverTime: now,
   };
@@ -776,6 +777,9 @@ router.get('/balance', requireAuth, (req: AuthenticatedRequest, res: Response): 
     balance: balance.totalBalance,
     totalMined: balance.totalMined,
     totalReferralBonus: balance.totalReferralBonus,
+    satoshis: balance.satoshis,
+    currency: balance.currency || (req.user!.currency ?? 'CP'),
+    legacyCpBalance: balance.legacyCpBalance,
     lastCalculatedAt: balance.lastCalculatedAt,
     integrityVerified: integrity.isValid,
   });
@@ -791,6 +795,7 @@ router.get('/balance/verify', requireAuth, (req: AuthenticatedRequest, res: Resp
     recordedBalance: integrity.recorded,
     ledgerReconciledBalance: integrity.expected,
     transactionCount: transactions.length,
+    currency: integrity.currency,
     timestamp: new Date().toISOString(),
   });
 });
@@ -813,6 +818,9 @@ router.get('/referrals', requireAuth, (req: AuthenticatedRequest, res: Response)
   const user = req.user!;
   const rateInfo = db.reconcileUserMiningRate(user.id);
   const rawReferrals = db.getReferralsByInviter(user.id);
+  const userBalance = db.getBalance(user.id);
+  const isBtc = user.currency === 'BTC_SIMULATED' || userBalance.currency === 'BTC_SIMULATED';
+  const baseBonusPerReferral = isBtc ? 0.00001 : 0.01;
 
   // Map to friendly format without exposing sensitive referred user details
   const referrals = rawReferrals.map((r) => {
@@ -836,7 +844,7 @@ router.get('/referrals', requireAuth, (req: AuthenticatedRequest, res: Response)
     success: true,
     referralCode: user.referralCode,
     inviteLink,
-    baseBonusPerReferral: 0.01,
+    baseBonusPerReferral,
     activeBonusRate: rateInfo.bonusRate,
     totalReferrals: rateInfo.totalReferralCount,
     activatedReferrals: rateInfo.activeReferralCount,
@@ -937,6 +945,8 @@ router.get('/admin/users', requireAdmin, (req: AuthenticatedRequest, res: Respon
       status: u.status,
       totalBalance: balance.totalBalance,
       totalMined: balance.totalMined,
+      currency: balance.currency || u.currency || 'CP',
+      satoshis: balance.satoshis,
       totalMiningRate: u.totalMiningRate,
       bonusMiningRate: u.bonusMiningRate,
       referralCode: u.referralCode,
@@ -1144,6 +1154,8 @@ router.post('/game/pulse-miner/claim-reward', requireAuth, (req: AuthenticatedRe
         totalBalance: result.balance.totalBalance,
         totalMined: result.balance.totalMined,
         totalReferralBonus: result.balance.totalReferralBonus,
+        currency: result.balance.currency || (user.currency ?? 'CP'),
+        satoshis: result.balance.satoshis,
         lastCalculatedAt: result.balance.lastCalculatedAt,
       },
       state: result.state,

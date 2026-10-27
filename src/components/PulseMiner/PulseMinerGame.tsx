@@ -29,6 +29,7 @@ import {
   PulseMinerUserState,
   PulseMinerStateResponse,
 } from '../../types.ts';
+import { formatBalance, getCurrencyShortUnit, isBtcDenominated } from '../../utils/format.ts';
 
 interface PulseMinerGameProps {
   user: User | null;
@@ -81,6 +82,29 @@ export const PulseMinerGame: React.FC<PulseMinerGameProps> = ({
   onBalanceUpdated,
   onBackToMining,
 }) => {
+  const currency = balance?.currency || user?.currency;
+  const isBtc = isBtcDenominated(currency);
+  const unit = getCurrencyShortUnit(currency);
+
+  const getLevelRewardDisplay = (levelId: number, rewardPoints: number) => {
+    if (isBtc) {
+      const btcRewards: Record<number, string> = {
+        1: '0.00001000',
+        2: '0.00001500',
+        3: '0.00002000',
+        4: '0.00002500',
+        5: '0.00003000',
+        6: '0.00004000',
+        7: '0.00005000',
+        8: '0.00006000',
+        9: '0.00007500',
+        10: '0.00010000',
+      };
+      return `+${btcRewards[levelId] || '0.00001000'} BTC`;
+    }
+    return `+${rewardPoints} CP`;
+  };
+
   const [gameState, setGameState] = useState<PulseMinerUserState | null>(null);
   const [levels, setLevels] = useState<PulseMinerLevel[]>([]);
   const [currentLevel, setCurrentLevel] = useState<PulseMinerLevel | null>(null);
@@ -880,7 +904,7 @@ export const PulseMinerGame: React.FC<PulseMinerGameProps> = ({
                   <h2 className="text-lg font-bold text-white tracking-tight">Pulse Miner Arcade</h2>
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed max-w-xs">
-                  Pilot your collector ship, harvest glowing energy crystals, and earn bonus virtual CP for
+                  Pilot your collector ship, harvest glowing energy crystals, and earn bonus virtual {isBtc ? 'Simulated BTC' : 'CP'} for
                   clearing each sector!
                 </p>
               </div>
@@ -898,7 +922,7 @@ export const PulseMinerGame: React.FC<PulseMinerGameProps> = ({
             <div className="mt-3 pt-3 border-t border-slate-800/60 flex items-center justify-between text-xs">
               <span className="text-slate-400">Total Arcade Points Awarded:</span>
               <span className="font-mono font-semibold text-emerald-400 tabular-nums">
-                +{gameState?.totalGamePointsEarned ?? 0} CP
+                +{formatBalance(gameState?.totalGamePointsEarned, currency)} {unit}
               </span>
             </div>
           </div>
@@ -979,7 +1003,7 @@ export const PulseMinerGame: React.FC<PulseMinerGameProps> = ({
                         </div>
                         <div className="flex items-center justify-between">
                           <span className="text-cyan-400 font-semibold">
-                            +{lvl.rewardPoints} CP
+                            {getLevelRewardDisplay(lvl.levelId, lvl.rewardPoints)}
                           </span>
                           {highScore > 0 && (
                             <span className="text-slate-500 text-[10px]">
@@ -1210,7 +1234,7 @@ export const PulseMinerGame: React.FC<PulseMinerGameProps> = ({
                 <span className="text-cyan-400 font-mono animate-pulse">Claiming...</span>
               ) : claimedPointsAwarded !== null ? (
                 <span className="font-mono font-bold text-emerald-400">
-                  {claimedPointsAwarded > 0 ? `+${claimedPointsAwarded} CP Credited!` : 'Replay (Saved)'}
+                  {claimedPointsAwarded > 0 ? `+${formatBalance(claimedPointsAwarded, currency)} ${unit} Credited!` : 'Replay (Saved)'}
                 </span>
               ) : claimError ? (
                 <span className="text-red-400 font-mono text-[11px]">Sync failed</span>
@@ -1378,7 +1402,7 @@ export const PulseMinerGame: React.FC<PulseMinerGameProps> = ({
                 <div>
                   <div className="font-semibold text-white">Earn Coin Pulse Rewards</div>
                   <div className="text-slate-400 text-[11px] mt-0.5">
-                    Each cleared level awards bonus virtual CP points credited directly to your unified
+                    Each cleared level awards bonus virtual {isBtc ? 'Simulated BTC' : 'CP'} points credited directly to your unified
                     balance.
                   </div>
                 </div>
